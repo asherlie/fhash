@@ -8,7 +8,7 @@
 // we only strictly need col_map to know the cardinality
 // of col arrays when allocating without all loaded to mem
 struct pmap_hdr{
-	int n_buckets;
+	int entries, n_buckets;
 	// max_keylen_map is used to keep track of the longest
 	// key length in a given bucket
 	// this is so that we don't need to take up memory
@@ -39,7 +39,8 @@ void build_pmap_hdr(struct pmap* p, char* key);
 void finalize_col_map(struct pmap* p);
 
 // inserts k/v pair into pmap 
-void insert_pmap(struct pmap* p, char* key, int val);
+//void insert_pmap(struct pmap* p, char* key, int val);
+void insert_pmap(struct pmap* p, char* key, int val, uint8_t* rdbuf, uint8_t* wrbuf);
 
 
 /* client */
