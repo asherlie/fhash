@@ -10,7 +10,7 @@ const _Bool debug = 0;
 int hash(char* key, int n_buckets){
 	int idx = 0;
 	for(char* i = key; *i; ++i){
-		idx += *i;
+		idx += (*i*(i-key+1));
 	}
 	return idx % n_buckets;
 }
@@ -25,7 +25,7 @@ void init_pmap_hdr(struct pmap* p, int n_buckets){
 void init_pmap(struct pmap* p, char* fn, int n_buckets){
 	init_pmap_hdr(p, n_buckets);
 	strncpy(p->fn, fn, sizeof(p->fn)-1);
-	p->fp = fopen(p->fn, "rb+");
+	p->fp = fopen(p->fn, "wb");
 	p->insert_ready = 0;
 	/*fwrite(&p->hdr, sizeof(struct p));*/
 }
@@ -81,9 +81,9 @@ void finalize_col_map(struct pmap* p){
 	 * nvm i'll just iterate through, i'll need to check for duplicates
 	 * anyway
 	*/
-    fflush(p->fp);
-    /*fclose(p->fp);*/
-    /*p->fp = fopen(p->fn, "rb+");*/
+    /*fflush(p->fp);*/
+    fclose(p->fp);
+    p->fp = fopen(p->fn, "rb+");
 	p->insert_ready = 1;
 }
 
@@ -94,15 +94,28 @@ _Bool mempty(uint8_t* buf, int len){
 	return 1;
 }
 
+/*
+ * need to store n_entries in hdr
+ * need insertions to be much faster
+*/
 // insert needs to fseek() using offset finder of hash()
 // fseek(seek_set, 4+2*n_buckets+)
-void insert_pmap(struct pmap* p, char* key, int val){
+/*void insert_pmap(struct pmap* p, char* key, int val){*/
+// need to pass rbuf and wrbuf - they should be alloc'd in the caller()
+// max_kv_sz = max(max_keylen_map)
+// i can potentially make this threadsafe and insert in different offsets from different threads
+// not sure if this will corrupt anything - having multiple FILE*s to the same file
+void insert_pmap(struct pmap* p, char* key, int val, uint8_t* rdbuf, uint8_t* wrbuf){
 	int idx = hash(key, p->hdr.n_buckets);
 	int kv_sz = p->hdr.max_keylen_map[idx]+sizeof(int);
 	int cur_offset;
     long int br;
-	uint8_t* rdbuf = malloc(kv_sz);
-	uint8_t* wrbuf = calloc(kv_sz, 1);
+    /*
+	 * uint8_t* rdbuf = malloc(kv_sz);
+	 * uint8_t* wrbuf = calloc(kv_sz, 1);
+    */
+    /* zero the section of wrbuf we'll be using */
+    memset(wrbuf, 0, kv_sz);
     // shouldn't be necessary but helps debugging
     /*memset(rdbuf, 0, kv_sz);*/
 	memcpy(wrbuf, key, strlen(key));
@@ -111,6 +124,28 @@ void insert_pmap(struct pmap* p, char* key, int val){
 	cur_offset = p->hdr.bucket_offset[idx];
 	fseek(p->fp, cur_offset, SEEK_SET);
     /*perror("FSEEK");*/
+    // can i organize the data in such a way that it's easier to compare strings?
+    // buckets are getting large and O(N) is not so easy anymore
+    // could also write a better hashing function
+    //
+    // ok the options are:
+    //  multithreading and split up the insertion
+    //      this is a good option - i insert_x() can add a request to a queue
+    //      this queue will have a limited amount of space and will block insertions
+    //      until it's been sufficienty popped and its elements moved to the hash
+    //
+    //  sort insertions to make finding duplicates easier
+    //  some kind of binary search?
+    //
+    //  can also enable the assumption that no duplicates will
+    //  be inserted
+    //      this is anothr good option - write this as a proof of concept
+    //
+    //  this will be the case in spotify
+    //
+    //  if we can enable duplicate detection only for updates!
+    //
+    //  write a better hash()
 	if(debug)printf("seeking to offset %i for key \"%s\"\n", cur_offset, key);
 	if(debug)printf("idx is %i with max keylen: %i\n", idx, p->hdr.max_keylen_map[idx]);
 	// iterate over all entries in a bucket looking for duplicates
@@ -168,7 +203,7 @@ void lookup_test(char* fn){
     struct pmap p;
     int val;
     load_pmap(&p, fn);
-    val = lookup_pmap(&p, "fizz");
+    val = lookup_pmap(&p, "ashy");
     printf("VAL: %i\n", val);
     fclose(p.fp);
 }
@@ -176,11 +211,12 @@ void lookup_test(char* fn){
 /*should contain total number of k/v pairs*/
 
 int main(){
-    lookup_test("PM");
-    return 0;
+    /*lookup_test("PM");*/
+    /*return 0;*/
 	struct pmap p;
     char str[5];
-    int n_str = 0;
+    int n_str = 0, tmp_keylen;
+    uint8_t* rdbuf, * wrbuf;
 	init_pmap(&p, "PM", 100000);
     // inserting 26^4 strings - ~500k
     for(int i = 0; i < 2; ++i){
@@ -188,18 +224,21 @@ int main(){
             for(char b = 'a'; b <= 'z'; ++b){
                 for(char c = 'a'; c <= 'z'; ++c){
                     for(char d = 'a'; d <= 'z'; ++d){
-                        /*++n_str;*/
-                        str[0] = a;
-                        str[1] = b;
-                        str[2] = c;
-                        str[3] = d;
+                        /*for(char e = 'a'; e <= 'z'; ++e){*/
+                            /*++n_str;*/
+                            str[0] = a;
+                            str[1] = b;
+                            str[2] = c;
+                            str[3] = d;
+                            /*str[4] = e;*/
 
-                        if(i == 0){
-                            build_pmap_hdr(&p, str);
-                        }
-                        else{
-                            insert_pmap(&p, str, 39);
-                            printf("\rinserted %.4i", ++n_str);
+                            if(i == 0){
+                                build_pmap_hdr(&p, str);
+                            }
+                            else{
+                                insert_pmap(&p, str, a-'a', rdbuf, wrbuf);
+                                /*printf("\rinserted %.4i", ++n_str);*/
+                            /*}*/
                         }
                     }
                 }
@@ -207,6 +246,14 @@ int main(){
         }
         if(i == 0){
             finalize_col_map(&p);
+            tmp_keylen = 0;
+            for(int j = 0; j < p.hdr.n_buckets; ++j){
+                if(p.hdr.max_keylen_map[j] > tmp_keylen)
+                    tmp_keylen = p.hdr.max_keylen_map[j];
+            }
+            tmp_keylen += sizeof(int);
+            rdbuf = malloc(tmp_keylen);
+            wrbuf = malloc(tmp_keylen);
         }
     }
     printf("generated %i strings\n", n_str);
