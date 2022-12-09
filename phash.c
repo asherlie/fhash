@@ -68,10 +68,6 @@ void finalize_col_map(struct pmap* p){
 		// alloc curr_offset[i]-curr_offset[i-1]
 		write_zeroes(p->fp, p->hdr.col_map[i]*(p->hdr.max_keylen_map[i]+sizeof(int)));
         if(debug)printf("wrote %li zeroes for idx %i\n", p->hdr.col_map[i]*(p->hdr.max_keylen_map[i]+sizeof(int)), i);
-        /*
-         * not enough zeroes being written, should be 32 - 16 initially, 8 for each k/v pair
-         * are they being written?
-        */
 	}
 	/*
 	 * todo - write an integer of cur_bucket_idx - 0 at start
@@ -94,10 +90,6 @@ _Bool mempty(uint8_t* buf, int len){
 	return 1;
 }
 
-/*
- * need to store n_entries in hdr
- * need insertions to be much faster
-*/
 // insert needs to fseek() using offset finder of hash()
 // fseek(seek_set, 4+2*n_buckets+)
 /*void insert_pmap(struct pmap* p, char* key, int val){*/
@@ -120,10 +112,12 @@ void insert_pmap(struct pmap* p, char* key, int val, uint8_t* rdbuf, uint8_t* wr
     /*memset(rdbuf, 0, kv_sz);*/
 	memcpy(wrbuf, key, strlen(key));
 	memcpy(wrbuf+p->hdr.max_keylen_map[idx], &val, sizeof(int));
-	/*p->hdr.bucket_offset[idx];*/
 	cur_offset = p->hdr.bucket_offset[idx];
 	fseek(p->fp, cur_offset, SEEK_SET);
-    /*perror("FSEEK");*/
+    // future work:
+    //
+    // store n_entries in hdr
+    //
     // can i organize the data in such a way that it's easier to compare strings?
     // buckets are getting large and O(N) is not so easy anymore
     // could also write a better hashing function
@@ -133,6 +127,15 @@ void insert_pmap(struct pmap* p, char* key, int val, uint8_t* rdbuf, uint8_t* wr
     //      this is a good option - i insert_x() can add a request to a queue
     //      this queue will have a limited amount of space and will block insertions
     //      until it's been sufficienty popped and its elements moved to the hash
+    //      this way we can abstract the splitting up of insertions into hashmap from the user
+    //      and can limit memory being used
+    //      we can keep mem to n_threads
+    //      it'll be very simple to make this threadsafe - just add mutex locks on a per bucket basis
+    //
+    //      but i can do better maybe, can i use a lock free datastructure
+    //      and use CAS/atomic incrementation to reserve spots in a bucket?
+    //      we can guarantee that there will be exactly one spot for each entry
+    //      this means that we can avoid any annoying edge cases
     //
     //  sort insertions to make finding duplicates easier
     //  some kind of binary search?
