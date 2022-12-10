@@ -156,6 +156,7 @@ void insert_pmi_q(struct pmi_q* pq, char* key, int val){
         // TODO: is there a more elegant solution?
         if(idx >= pq->const_capacity){
             puts("bad idx");
+            atomic_store(&pq->ins_idx, 0);
             continue;
         }
         /*printf("ins idx %i\n", idx);*/
@@ -400,11 +401,11 @@ void pmi_q_test(){
     // to spawn with init_pmap()
     // remember to open multiple file pointers and to free up memory for keys
     //
-    int n_threads = 9;
+    int n_threads = 40;
     pthread_t* ins = malloc(sizeof(pthread_t)*n_threads);
     pthread_t* pop = malloc(sizeof(pthread_t)*n_threads);
     struct pmi_q pq;
-    init_pmi_q(&pq, 300);
+    init_pmi_q(&pq, 2);
 
     for(int i = 0; i < n_threads; ++i){
         pthread_create(ins+i, NULL, insert_pmi_thread, &pq);
