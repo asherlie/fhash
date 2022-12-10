@@ -1,5 +1,105 @@
 #include <stdio.h>
+#include <stdint.h>
+#include <pthread.h>
 
+// this is included only if we're generating a pmap - it contains:
+// _Atomic int bucket_ins_idx[n_buckets]
+// which is used for thread safety - although this only works assuming
+// there can be no duplicates because if we just atomically grab in ins idx
+// we can't compare
+// WAIT we can actually, we can just iterate over existing data - reads are always safe
+// go thru, check if duplicate. if so, 
+//
+// OKAY, might be approaching this wrong. i can potentially just do the lock free index reserving
+// approach and ignore the prospect of duplicates
+// if they're possible, we can do a scan of the entire map afterwards and nvm... too expensive to compare
+// all keys within a bucket
+//
+// the goal is to make it safe to check for duplicates whie other threads are writin
+// we can use a linked list to assign indices because it will be easy to give up an assigned one
+// if we don't need one
+//
+// okay:
+//  verify key isn't an exact duplicate:
+//      reserve an idx
+//      write k/v pair to new idx
+//  else
+//      update value - cas(
+//
+// safe though would be to just have pthreads for each bucket and lock when accessing them
+// we can safely check for dupes
+//
+// maybe this can be done if duplicates are allowed
+// otherwise, go lock free and very fast
+//
+//  THIS IS THE MOVE IT SEEMS - go lock free if no dupes, otherwise just use locks per bucket
+
+struct pmi_entry{
+    char* key;
+    int val;
+};
+
+struct pmi_q{
+    /*
+     * can just be an array of size cap and we do:
+     * capacity will be set on initialization
+        // reset idx to 0 if at capacity
+        cas(ins_idx, cap, 0)
+        idx = atomic_increment(ins_idx)
+        BUT what do we do if it's full and we can't insert?
+
+        xx = atomic_load(ins_idx)
+        if(xx == cap)
+    */
+#if !1
+ok maybe increment first
+if idx is too large, cond_wait until we have not only popped but done a full insertion
+
+//idx = atomic_increment(ins_idx)
+idx = atoic_load(ins_idx)
+if(idx == cap){
+    cond_wait() // this will be alerted once an insertion has completed
+}
+cas(ins_idx, cap) // reset to idx 0 if we can
+idx = atomic_increment()
+// hmm, this might be really cool - keep searching for a NULL entry continuously
+// once one is found we can instantly insert
+// might even negate the need for cond_wait() if we can just iterate using atomic_increment/cas() to set
+// in a while loop for each insertino
+// this should be my first implementation
+// entries will be popped using a separate pop_idx
+cas(buf[ins_idx], 0, new_val)
+
+we can then pop using:
+    to_pop = atomic_load()
+    cas(q[pop_idx], to_pop, NULL)
+
+
+
+this gets complicated though when considering the necessity of keeping not yet popped entries intact
+there may be an entry in idx 0 that we could overwrite
+
+because of this we should just use a mutex lock here
+we are going to need to use locks anyway due to cond_wait acquiring one
+#endif
+    _Atomic int ins_idx, pop_idx;
+    // no longer used
+    //int capacity;
+    int const_capacity;
+
+    _Atomic struct pmi_entry** entries;
+};
+
+struct pmap_insertion{
+    // if duplicates are expected, opt for the more conservative mutex lock
+    // in case of collision
+    // if !duplicates_expected, we can just reserve idx atomically because we know ther
+    // will not be any collisions
+    _Bool duplicates_expected;
+    // used to reserve insertion indices per bucket
+    _Atomic int* bucket_ins_idx;
+    struct pmi_q pq;
+};
 // hdr will be loaded into memory and used to know
 // how many buckets exist
 // the col_map will also be included here
@@ -15,6 +115,8 @@ struct pmap_hdr{
 	// to store long keys for buckets without any
 	// bucket_offset is used to determine fp offset of a bucket
 	int* col_map, * max_keylen_map, * bucket_offset;
+    // stored in a diff struct because this is never written to phash file
+    struct pmap_insertion pmi;
 };
 
 struct pmap_entry{
