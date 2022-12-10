@@ -154,7 +154,11 @@ void insert_pmi_q(struct pmi_q* pq, char* key, int val){
         // this could potentially occur if we fetch add simultaneously
         // easy fix is just to continue
         // TODO: is there a more elegant solution?
-        if(idx >= pq->const_capacity)continue;
+        if(idx >= pq->const_capacity){
+            puts("bad idx");
+            continue;
+        }
+        /*printf("ins idx %i\n", idx);*/
         // if our ins_idx is NULL, we can update the entry
         // otherwise, keep iterating
         ne = NULL;
@@ -163,20 +167,41 @@ void insert_pmi_q(struct pmi_q* pq, char* key, int val){
     }
 }
 
+/*
+ * this may not return if our list is full
+ * try to reproduce issue with sequential writes
+*/
 _Atomic struct pmi_entry* pop_pmi_q(struct pmi_q* pq){
     int idx, capacity;
-    _Atomic struct pmi_entry* ret, * ne;
+    _Atomic struct pmi_entry* ret;
     /*atomic_load(pq->pop_idx);*/
     while(1){
         /*atomic_store(&pq->capacity, pq->const_capacity);*/
         capacity = pq->const_capacity;
+
+        #if !1
+        if there's only one popping thread then there won't be a way to reset pop_idx
+        nope, same thread can just do this
+        #endif
+
+
         atomic_compare_exchange_strong(&pq->pop_idx, &capacity, 0);
         idx = atomic_fetch_add(&pq->pop_idx, 1);
-        if(idx >= pq->const_capacity)continue;
+        if(idx >= pq->const_capacity){
+            /*found hte pborblem! always bad idx when hanging*/
+            printf("bad pdx %i\n", idx);
+            atomic_store(&pq->pop_idx, 0);
+            /*
+             * we should atomic_store(0) in idx, not a huge deal if we ruin our current popping progress
+             * in another thread since the actual removal and insertion is threadsafe
+             * this should also be done in insert_pmi_q() but for some reason it doesn't have the same issue
+            */
+            continue;
+        }
+        /*printf("pop idx %i\n", idx);*/
         ret = atomic_load(pq->entries+idx);
         if(!ret)continue;
-        ne = NULL;
-        if(atomic_compare_exchange_strong(pq->entries+idx, &ret, ne))
+        if(atomic_compare_exchange_strong(pq->entries+idx, &ret, NULL))
             break;
     }
     return ret;
@@ -330,7 +355,44 @@ void lookup_test(char* fn){
 
 /*should contain total number of k/v pairs*/
 
+_Atomic int insertions = 0, pops = 0;
+void* insert_pmi_thread(void* vpq){
+    struct pmi_q* pq = vpq;
+    for(int i = 0; i < 20; ++i){
+        insert_pmi_q(pq, "key", 99);
+        atomic_fetch_add(&insertions, 1);
+        printf("inserted %i\n", i);
+    }
+    return NULL;
+}
+
+void* pop_pmi_thread(void* vpq){
+    struct pmi_q* pq = vpq;
+    for(int i = 0; i < 20; ++i){
+        pop_pmi_q(pq);
+        atomic_fetch_add(&pops, 1);
+        printf("popped %i\n", i);
+    }
+    return NULL;
+}
+
+void sequential_pmi_q_debug(){
+    struct pmi_q pq;
+    init_pmi_q(&pq, 300);
+    for(int i = 0; i < 11; ++i){
+        insert_pmi_q(&pq, "key", i);
+    }
+    for(int i = 0; i < 200; ++i){
+        pop_pmi_q(&pq);
+        insert_pmi_q(&pq, "key", i);
+    }
+}
+
 void pmi_q_test(){
+    /*
+     * sequential_pmi_q_debug();
+     * return;
+    */
     // testing out concurrent reads/writes
     // should pop exactly what is inserted
     // and should never contain more than capacity
@@ -338,10 +400,29 @@ void pmi_q_test(){
     // to spawn with init_pmap()
     // remember to open multiple file pointers and to free up memory for keys
     //
-    pthread_t ins[20];
-    pthread_t pop[20];
+    int n_threads = 9;
+    pthread_t* ins = malloc(sizeof(pthread_t)*n_threads);
+    pthread_t* pop = malloc(sizeof(pthread_t)*n_threads);
     struct pmi_q pq;
     init_pmi_q(&pq, 300);
+
+    for(int i = 0; i < n_threads; ++i){
+        pthread_create(ins+i, NULL, insert_pmi_thread, &pq);
+        pthread_create(pop+i, NULL, pop_pmi_thread, &pq);
+    }
+
+    /*i think we hang because all popper threads are joined and we do an insertion*/
+    for(int i = 0; i < n_threads; ++i){
+        pthread_join(ins[i], NULL);
+        printf("join ins[%i]\n", i);
+        pthread_join(pop[i], NULL);
+        printf("join pop[%i]\n", i);
+    }
+
+    printf("pops: %i, insertions: %i\n", pops, insertions);
+
+    return;
+
     for(int i = 0; i < 481; ++i){
         insert_pmi_q(&pq, "key", 99);
         pop_pmi_q(&pq);
