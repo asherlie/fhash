@@ -34,6 +34,8 @@
 //
 //  THIS IS THE MOVE IT SEEMS - go lock free if no dupes, otherwise just use locks per bucket
 
+// this is the same as pmi_entry... remove one
+// TODO: separate out pmi_q code/defs
 struct pmi_entry{
     char* key;
     int val;
@@ -83,11 +85,22 @@ because of this we should just use a mutex lock here
 we are going to need to use locks anyway due to cond_wait acquiring one
 #endif
     _Atomic int ins_idx, pop_idx;
-    // no longer used
-    //int capacity;
-    int const_capacity;
+    // pop target is set to the total number of entries that will be inserted
+    // this will be known because insertion is only done on a second pass of the data
+    // after calculating key size
+    // although if we know there won't be collisions we can maybe just also assume a keylen
+    // and do a single pass
+    //
+    // if this is changed to use single pass then we can use a timeout mechanism
+    //
+    int const_capacity, pop_target;
+    _Atomic int n_popped;
 
     _Atomic struct pmi_entry** entries;
+
+    // weird place for this, but we can stop waiting for a pop if we set this var
+    //init this!!
+    //volatile _Bool finished;
 };
 
 struct pmap_insertion{
@@ -96,8 +109,12 @@ struct pmap_insertion{
     // if !duplicates_expected, we can just reserve idx atomically because we know ther
     // will not be any collisions
     _Bool duplicates_expected;
+    int n_threads;
     // used to reserve insertion indices per bucket
     _Atomic int* bucket_ins_idx;
+    _Atomic int n_entries;
+    int target_entries;
+    uint8_t* rdbuf, * wrbuf;
     struct pmi_q pq;
 };
 // hdr will be loaded into memory and used to know
@@ -120,7 +137,7 @@ struct pmap_hdr{
 };
 
 struct pmap_entry{
-	int key_len;
+	//int key_len;
 	char* key;
 	int val;
 };
@@ -136,7 +153,7 @@ void init_pmap(struct pmap* p, char* fn, int n_buckets);
 // col_map must be built with identical data
 // to what will be inserted
 //
-void init_pmap_hdr(struct pmap* p, int n_buckets);
+void init_pmap_hdr(struct pmap* p, int n_buckets, int n_threads);
 void build_pmap_hdr(struct pmap* p, char* key);
 void finalize_col_map(struct pmap* p);
 
