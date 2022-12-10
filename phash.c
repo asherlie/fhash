@@ -1,6 +1,7 @@
 #include <stdlib.h>
 #include <stdint.h>
 #include <limits.h>
+#include <stdatomic.h>
 #include <string.h>
 
 #include "phash.h"
@@ -15,11 +16,22 @@ int hash(char* key, int n_buckets){
 	return idx % n_buckets;
 }
 
+void init_pmi_q(struct pmi_q* pq, int capacity){
+    pq->ins_idx = pq->pop_idx = 0;
+    pq->const_capacity = capacity;
+    pq->entries = calloc(sizeof(struct pmi_entry*), pq->const_capacity);
+}
+
 void init_pmap_hdr(struct pmap* p, int n_buckets){
 	p->hdr.n_buckets = n_buckets;
 	p->hdr.col_map = calloc(sizeof(int), n_buckets);
 	p->hdr.max_keylen_map = calloc(sizeof(int), n_buckets);
 	p->hdr.bucket_offset = calloc(sizeof(int), n_buckets);
+
+    // TODO: pay attention to duplicates_expected
+    p->hdr.pmi.bucket_ins_idx = calloc(sizeof(int), n_buckets);
+    // too high?
+    init_pmi_q(&p->hdr.pmi.pq, n_buckets);
 }
 
 void init_pmap(struct pmap* p, char* fn, int n_buckets){
@@ -97,11 +109,95 @@ _Bool mempty(uint8_t* buf, int len){
 // max_kv_sz = max(max_keylen_map)
 // i can potentially make this threadsafe and insert in different offsets from different threads
 // not sure if this will corrupt anything - having multiple FILE*s to the same file
+// this will be renamed _internal_insert_pmap. insert_pmap() will insert into a queue that's shared
+// with a thread that is continuously popping from the queue and calling _internal_insert_pmap() 
+// this queue will only be able to contain a limited number of entries at a time
+// it will pthread_cond_wait() until  
+// wait actually i think it'll use atomic vars to see how many threads are currently 
+// nvm it'll use an atomic var to see how many entries are in it
+// it will only be inserted into if this number < a specified number
+//
+// q will live in pmi - the struct containing all data needed for insertion
+// that will not be passed along to the file being built
+//
+// a = atomic_load(p->hdr.pmi.q->sz)
+// should never be gt cutoff
+// if(a >= cutoff_q_sz){
+//  pthread_cond_wait(p->hdr.pmi.q->cond);
+// }
+
+// TODO: should these use mutex locks instead of atomic operations?
+// does using cpu time negatively impact actual insertion into phash?
+void insert_pmi_q(struct pmi_q* pq, char* key, int val){
+    int idx, capacity;
+    _Atomic struct pmi_entry* ne, * e = malloc(sizeof(struct pmi_entry));
+    // TODO: key must be free()d after insertion
+    _Atomic struct pmi_entry tmp_e = {.key = strdup(key), .val = val};
+    // TODO: key must be alloc'd/put into a buffer for this thread
+    // TODO: ensure this is freed after insertion
+    atomic_store(&e, &tmp_e);
+    /*
+     * atomic_store(&e->key, strdup(key));
+     * atomic_store(&e->val, val);
+    */
+    /*e->key = strdup(key);*/
+    /*e->val = val;*/
+    while(1){
+        // reset to 0 if neccessary
+        /*pq->capacity = pq->const_capacity;*/
+        /*atomic_store(&pq->capacity, pq->const_capacity);*/
+        /*printf("cap: %i\n", pq->capacity);*/
+        // there's still a chance that pq->capacity could be set by another thread
+        capacity = pq->const_capacity;
+        atomic_compare_exchange_strong(&pq->ins_idx, &capacity, 0);
+        idx = atomic_fetch_add(&pq->ins_idx, 1);
+        // this could potentially occur if we fetch add simultaneously
+        // easy fix is just to continue
+        // TODO: is there a more elegant solution?
+        if(idx >= pq->const_capacity)continue;
+        // if our ins_idx is NULL, we can update the entry
+        // otherwise, keep iterating
+        ne = NULL;
+        if(atomic_compare_exchange_strong(pq->entries+idx, &ne, e))
+            break;
+    }
+}
+
+_Atomic struct pmi_entry* pop_pmi_q(struct pmi_q* pq){
+    int idx, capacity;
+    _Atomic struct pmi_entry* ret, * ne;
+    /*atomic_load(pq->pop_idx);*/
+    while(1){
+        /*atomic_store(&pq->capacity, pq->const_capacity);*/
+        capacity = pq->const_capacity;
+        atomic_compare_exchange_strong(&pq->pop_idx, &capacity, 0);
+        idx = atomic_fetch_add(&pq->pop_idx, 1);
+        if(idx >= pq->const_capacity)continue;
+        ret = atomic_load(pq->entries+idx);
+        if(!ret)continue;
+        ne = NULL;
+        if(atomic_compare_exchange_strong(pq->entries+idx, &ret, ne))
+            break;
+    }
+    return ret;
+}
+
+void insert_pmap_queue(struct pmap* p, char* k, int val, uint8_t* rdbuf, uint8_t* wrbuf){
+    (void)p;
+    (void)k;
+    (void)val;
+    (void)rdbuf;
+    (void)wrbuf;
+}
+
+// insert_pmap_thread() // n_threads of these will be spawned - make sure to pass a uniqe FP to each thread
+
 void insert_pmap(struct pmap* p, char* key, int val, uint8_t* rdbuf, uint8_t* wrbuf){
 	int idx = hash(key, p->hdr.n_buckets);
 	int kv_sz = p->hdr.max_keylen_map[idx]+sizeof(int);
 	int cur_offset;
     long int br;
+    int dupes = 0;
     /*
 	 * uint8_t* rdbuf = malloc(kv_sz);
 	 * uint8_t* wrbuf = calloc(kv_sz, 1);
@@ -142,7 +238,7 @@ void insert_pmap(struct pmap* p, char* key, int val, uint8_t* rdbuf, uint8_t* wr
     //
     //  can also enable the assumption that no duplicates will
     //  be inserted
-    //      this is anothr good option - write this as a proof of concept
+    //      this is another good option - write this as a proof of concept
     //
     //  this will be the case in spotify
     //
@@ -153,12 +249,33 @@ void insert_pmap(struct pmap* p, char* key, int val, uint8_t* rdbuf, uint8_t* wr
 	if(debug)printf("idx is %i with max keylen: %i\n", idx, p->hdr.max_keylen_map[idx]);
 	// iterate over all entries in a bucket looking for duplicates
 	// if none are found, insert at idx 0
+    // i can store a struct just to help with insertions assuming all insertions will be done at once
+    // this struct can contain info that doesn't need to be contained in 
 	for(int i = 0; i < p->hdr.col_map[idx]; ++i){
         br = fread(rdbuf, 1, kv_sz, p->fp);
 		if(debug)printf("    %i/%i: read %li/%i bytes\n", i, p->hdr.col_map[idx], br, kv_sz);
         /*perror("");*/
 		/*if empty - rewind, insert*/
 		/*if key is identical, update*/
+        // okay, cool. no dupes. should be good to use lock free threadsafety
+        // each thread will likely need its own FILE*. these can be passed into the threads
+        // in the place they're spawned
+        // there'll be code that sets up the queue and spawns insert_pmap() threads
+        // spawn_insert_pmap(){
+        //  FILE* fp = ...()
+        //  spawn_thread(queue, pmap)
+        // }
+        //
+        // if(no_duplicates){
+        //  col_idx = atomic_increment(p->hdr.pmap_insertion.bucket_ins_idx[idx])
+        //  fseek(cur_offset+(kv_sz*col_idx))
+        //  fwrite()
+#if !1
+this!   //  // no need to rdbuf in this case, no reading whatsoever! just reserving idx and inserting !!!
+#endif
+        // }
+        // else {do what we do now, later write lock impl}
+        if(!memcmp(rdbuf, wrbuf, p->hdr.max_keylen_map[idx]))printf("dupes: %i\n", ++dupes);
 		if(!memcmp(rdbuf, wrbuf, p->hdr.max_keylen_map[idx]) || mempty(rdbuf, kv_sz)){
             if(debug)printf("    found a spot to write\n");
 			fseek(p->fp, -kv_sz, SEEK_CUR);
@@ -206,14 +323,35 @@ void lookup_test(char* fn){
     struct pmap p;
     int val;
     load_pmap(&p, fn);
-    val = lookup_pmap(&p, "ashy");
+    val = lookup_pmap(&p, "yshy");
     printf("VAL: %i\n", val);
     fclose(p.fp);
 }
 
 /*should contain total number of k/v pairs*/
 
+void pmi_q_test(){
+    // testing out concurrent reads/writes
+    // should pop exactly what is inserted
+    // and should never contain more than capacity
+    // once this is written i can write the insertion thread and just have the user decide how many
+    // to spawn with init_pmap()
+    // remember to open multiple file pointers and to free up memory for keys
+    //
+    pthread_t ins[20];
+    pthread_t pop[20];
+    struct pmi_q pq;
+    init_pmi_q(&pq, 300);
+    for(int i = 0; i < 481; ++i){
+        insert_pmi_q(&pq, "key", 99);
+        pop_pmi_q(&pq);
+        printf("inserted %i!\n", i);
+    }
+}
+
 int main(){
+    pmi_q_test();
+    return 1;
     /*lookup_test("PM");*/
     /*return 0;*/
 	struct pmap p;
@@ -239,6 +377,7 @@ int main(){
                                 build_pmap_hdr(&p, str);
                             }
                             else{
+                                ++n_str;
                                 insert_pmap(&p, str, a-'a', rdbuf, wrbuf);
                                 /*printf("\rinserted %.4i", ++n_str);*/
                             /*}*/
