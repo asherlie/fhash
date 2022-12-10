@@ -20,9 +20,13 @@ void init_pmi_q(struct pmi_q* pq, int capacity){
     pq->ins_idx = pq->pop_idx = 0;
     pq->const_capacity = capacity;
     pq->entries = calloc(sizeof(struct pmi_entry*), pq->const_capacity);
+    pq->n_popped = 0;
+    // this is updated during building of pmap_hdr
+    pq->pop_target = 0;
+    /*pq->finished = 0;*/
 }
 
-void init_pmap_hdr(struct pmap* p, int n_buckets){
+void init_pmap_hdr(struct pmap* p, int n_buckets, int n_threads){
 	p->hdr.n_buckets = n_buckets;
 	p->hdr.col_map = calloc(sizeof(int), n_buckets);
 	p->hdr.max_keylen_map = calloc(sizeof(int), n_buckets);
@@ -30,12 +34,19 @@ void init_pmap_hdr(struct pmap* p, int n_buckets){
 
     // TODO: pay attention to duplicates_expected
     p->hdr.pmi.bucket_ins_idx = calloc(sizeof(int), n_buckets);
+    p->hdr.pmi.n_threads = n_threads;
+    // set target_entries to 0, it will be updated while we build the pmap hdr
+    // this is then used for each insertion thread to check if it should stop
+    // still won't be perfect
+    p->hdr.pmi.target_entries = 0;
+    /*p->hdr.pmi.n_entries = 0;*/
     // too high?
+    /*we don't know n_entries until after finalize*/
     init_pmi_q(&p->hdr.pmi.pq, n_buckets);
 }
 
 void init_pmap(struct pmap* p, char* fn, int n_buckets){
-	init_pmap_hdr(p, n_buckets);
+	init_pmap_hdr(p, n_buckets, 30);
 	strncpy(p->fn, fn, sizeof(p->fn)-1);
 	p->fp = fopen(p->fn, "wb");
 	p->insert_ready = 0;
@@ -46,6 +57,9 @@ void build_pmap_hdr(struct pmap* p, char* key){
 	int idx = hash(key, p->hdr.n_buckets);
 	int keylen = strlen(key);
 	++p->hdr.col_map[idx];
+    // TODO: this can be removed, target_entries is not used
+    ++p->hdr.pmi.target_entries;
+    ++p->hdr.pmi.pq.pop_target;
 	if(keylen > p->hdr.max_keylen_map[idx])
 		p->hdr.max_keylen_map[idx] = keylen;
 }
@@ -155,7 +169,7 @@ void insert_pmi_q(struct pmi_q* pq, char* key, int val){
         // easy fix is just to continue
         // TODO: is there a more elegant solution?
         if(idx >= pq->const_capacity){
-            puts("bad idx");
+            /*puts("bad idx");*/
             atomic_store(&pq->ins_idx, 0);
             continue;
         }
@@ -172,11 +186,15 @@ void insert_pmi_q(struct pmi_q* pq, char* key, int val){
  * this may not return if our list is full
  * try to reproduce issue with sequential writes
 */
+// returns NULL if all data have been popped
 _Atomic struct pmi_entry* pop_pmi_q(struct pmi_q* pq){
     int idx, capacity;
     _Atomic struct pmi_entry* ret;
     /*atomic_load(pq->pop_idx);*/
-    while(1){
+    while(pq){
+        if(atomic_load(&pq->n_popped) == pq->pop_target)
+            return NULL;
+        /*if(pq->n_entries)*/
         /*atomic_store(&pq->capacity, pq->const_capacity);*/
         capacity = pq->const_capacity;
 
@@ -190,7 +208,7 @@ _Atomic struct pmi_entry* pop_pmi_q(struct pmi_q* pq){
         idx = atomic_fetch_add(&pq->pop_idx, 1);
         if(idx >= pq->const_capacity){
             /*found hte pborblem! always bad idx when hanging*/
-            printf("bad pdx %i\n", idx);
+            /*printf("bad pdx %i\n", idx);*/
             atomic_store(&pq->pop_idx, 0);
             /*
              * we should atomic_store(0) in idx, not a huge deal if we ruin our current popping progress
@@ -202,8 +220,10 @@ _Atomic struct pmi_entry* pop_pmi_q(struct pmi_q* pq){
         /*printf("pop idx %i\n", idx);*/
         ret = atomic_load(pq->entries+idx);
         if(!ret)continue;
-        if(atomic_compare_exchange_strong(pq->entries+idx, &ret, NULL))
+        if(atomic_compare_exchange_strong(pq->entries+idx, &ret, NULL)){
+            atomic_fetch_add(&pq->n_popped, 1);
             break;
+        }
     }
     return ret;
 }
@@ -216,7 +236,33 @@ void insert_pmap_queue(struct pmap* p, char* k, int val, uint8_t* rdbuf, uint8_t
     (void)wrbuf;
 }
 
-// insert_pmap_thread() // n_threads of these will be spawned - make sure to pass a uniqe FP to each thread
+// rdbuf/wrbuf are now contained in p->hdr.pmi
+void* insert_pmap_th(void* vpmap){
+    // n_threads of these will be spawned - make sure to pass a uniqe FP to each thread
+    struct pmap* p = vpmap;
+    _Atomic struct pmi_entry* e;
+    while(1){
+        /*
+         * if(atomic_load(&p->hdr.pmi.n_entries) == p->hdr.pmi.target_entries)
+         *     break;
+        */
+        // pop_pmi_q busy waits! we can just check to see if we should exit!
+        // it'll return NULL if ready to exit and it can do its own math
+        //
+        // we will run each thread until there's no more data to pop(), makes sense
+        e = pop_pmi_q(&p->hdr.pmi.pq);
+        if(!e)break;
+    /*
+     * we can check the value of fetch_add() - exit thread if == n_entries
+     * and also atomic_load() before iterating
+    */
+    }
+    return NULL;
+}
+
+// the new insert_pmap() function will just insert a request into the queue, waiting until 
+// a new idx opens up if necessary
+//
 
 void insert_pmap(struct pmap* p, char* key, int val, uint8_t* rdbuf, uint8_t* wrbuf){
 	int idx = hash(key, p->hdr.n_buckets);
@@ -252,9 +298,7 @@ void insert_pmap(struct pmap* p, char* key, int val, uint8_t* rdbuf, uint8_t* wr
     //      this way we can abstract the splitting up of insertions into hashmap from the user
     //      and can limit memory being used
     //      we can keep mem to n_threads
-    //      it'll be very simple to make this threadsafe - just add mutex locks on a per bucket basis
-    //
-    //      but i can do better maybe, can i use a lock free datastructure
+    //      it'll be very simple to make this threadsafe - just add mutex locks on a per bucket basis // //      but i can do better maybe, can i use a lock free datastructure
     //      and use CAS/atomic incrementation to reserve spots in a bucket?
     //      we can guarantee that there will be exactly one spot for each entry
     //      this means that we can avoid any annoying edge cases
@@ -401,11 +445,11 @@ void pmi_q_test(){
     // to spawn with init_pmap()
     // remember to open multiple file pointers and to free up memory for keys
     //
-    int n_threads = 40;
+    int n_threads = 2;
     pthread_t* ins = malloc(sizeof(pthread_t)*n_threads);
     pthread_t* pop = malloc(sizeof(pthread_t)*n_threads);
     struct pmi_q pq;
-    init_pmi_q(&pq, 2);
+    init_pmi_q(&pq, 100);
 
     for(int i = 0; i < n_threads; ++i){
         pthread_create(ins+i, NULL, insert_pmi_thread, &pq);
@@ -460,6 +504,8 @@ int main(){
                             }
                             else{
                                 ++n_str;
+                                // multithreaded insertions that leverage p.hdr.pmi.pq
+                                /*inesrt_pmap_par();*/
                                 insert_pmap(&p, str, a-'a', rdbuf, wrbuf);
                                 /*printf("\rinserted %.4i", ++n_str);*/
                             /*}*/
