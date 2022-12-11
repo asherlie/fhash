@@ -46,13 +46,14 @@ void init_pmap_hdr(struct pmap* p, int n_buckets, int n_threads, _Bool duplicate
     /*p->hdr.pmi.n_entries = 0;*/
     // too high?
     /*we don't know n_entries until after finalize*/
-    init_pmi_q(&p->hdr.pmi.pq, n_buckets);
+    /*init_pmi_q(&p->hdr.pmi.pq, n_buckets);*/
+    init_pmi_q(&p->hdr.pmi.pq, 100);
     p->hdr.pmi.duplicates_expected = duplicates_expected;
     p->hdr.pmi.n_threads = duplicates_expected ? 1 : n_threads;
 }
 
 void init_pmap(struct pmap* p, char* fn, int n_buckets){
-	init_pmap_hdr(p, n_buckets, 30, 0);
+	init_pmap_hdr(p, n_buckets, 4, 0);
 	strncpy(p->fn, fn, sizeof(p->fn)-1);
 	p->fp = fopen(p->fn, "wb");
 	p->insert_ready = 0;
@@ -84,7 +85,9 @@ void write_zeroes(FILE* fp, int nbytes){
 	fwrite(z, nbytes, 1, fp);
 	free(z);
 }
+
 // build the scaffolding that all k/v will fit into
+// TODO: this should be renamed to finalize_pmap_hdr()
 void finalize_col_map(struct pmap* p){
 	int cur_offset = sizeof(int)+(3*sizeof(int)*p->hdr.n_buckets);
     // TODO: alloc here?
@@ -129,6 +132,19 @@ void finalize_col_map(struct pmap* p){
     p->fp = fopen(p->fn, "rb+");
     spawn_pmi_q_pop_threads(p);
 	p->insert_ready = 1;
+}
+
+// frees memory and joins threads used for pmap insertion
+void cleanup_pmi(struct pmap* p){
+    for(int i = 0; i < p->hdr.pmi.n_threads; ++i){
+        pthread_join(p->hdr.pmi.pmi_q_pop_threads[i], NULL);
+    }
+
+    free(p->hdr.bucket_offset);
+    free(p->hdr.max_keylen_map);
+    free(p->hdr.col_map);
+
+    free(p->hdr.pmi.bucket_ins_idx);
 }
 
 _Bool mempty(uint8_t* buf, int len){
@@ -283,6 +299,7 @@ void* insert_pmap_th(void* vpmap){
         // buffers must be alloc'd up top DO NOT USE the one in hdr
         // can't be shared like this, there must be one allocated per thread
         // we can pass along size though, that's what should live in the struct
+        /*printf("inserting %s:%i\n", e.key, e.val);*/
         insert_pmap(p, e.key, e.val, rdbuf, wrbuf, fp);
     /*
      * we can check the value of fetch_add() - exit thread if == n_entries
@@ -404,6 +421,8 @@ void insert_pmap(struct pmap* p, char* key, int val, uint8_t* rdbuf, uint8_t* wr
         // TODO: 
         fseek(fp, kv_sz*ins_idx, SEEK_CUR);
         fwrite(wrbuf, kv_sz, 1, fp);
+        // why are there duplicates? keys being inserted multiple times
+        /*printf("inserted %s into bucket[%i]:%i\n", key, idx, ins_idx);*/
     }
     fflush(fp);
     /*
@@ -441,11 +460,11 @@ int lookup_pmap(const struct pmap* p, char* key){
     return -1;
 }
 
-void lookup_test(char* fn){
+void lookup_test(char* fn, char* key){
     struct pmap p;
     int val;
     load_pmap(&p, fn);
-    val = lookup_pmap(&p, "yshy");
+    val = lookup_pmap(&p, key);
     printf("VAL: %i\n", val);
     fclose(p.fp);
 }
@@ -527,13 +546,17 @@ void pmi_q_test(){
     }
 }
 
-int main(){
-    pmi_q_test();
-    return 1;
-    /*lookup_test("PM");*/
-    /*return 0;*/
+int main(int argc, char** argv){
+    /*
+     * pmi_q_test();
+     * return 1;
+    */
+    if(argc > 1){
+        lookup_test("PM", argv[1]);
+        return 0;
+    }
 	struct pmap p;
-    char str[5];
+    char str[5] = {0};
     int n_str = 0;
 	init_pmap(&p, "PM", 100000);
     // inserting 26^4 strings - ~500k
@@ -548,6 +571,7 @@ int main(){
                             str[1] = b;
                             str[2] = c;
                             str[3] = d;
+                        /*if(a == 'z' && b == 'z' && c == 'z')puts(str);*/
                             /*str[4] = e;*/
 
                             if(i == 0){
@@ -567,6 +591,7 @@ int main(){
 
                                 actual insert will need to grab some FILE*s and fclose()
                                 #endif
+                                insert_pmi_q(&p.hdr.pmi.pq, str, a-'a');
                                 /*printf("\rinserted %.4i", ++n_str);*/
                             /*}*/
                         }
@@ -579,6 +604,7 @@ int main(){
         }
     }
     printf("generated %i strings\n", n_str);
+    cleanup_pmi(&p);
 	/*build_pmap_hdr(&p, "ashini");*/
     /*
 	 * build_pmap_hdr(&p, "baby");
@@ -593,6 +619,4 @@ int main(){
     */
 	/*insert_pmap(&p, "ashini", 49);*/
     fclose(p.fp);
-
-    lookup_test("PM");
 }

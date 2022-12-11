@@ -158,6 +158,7 @@ void init_pmap(struct pmap* p, char* fn, int n_buckets);
 void init_pmap_hdr(struct pmap* p, int n_buckets, int n_threads, _Bool duplicates_expected);
 void build_pmap_hdr(struct pmap* p, char* key);
 void finalize_col_map(struct pmap* p);
+void cleanup_pmi(struct pmap* p);
 
 // inserts k/v pair into pmap 
 //void insert_pmap(struct pmap* p, char* key, int val);
