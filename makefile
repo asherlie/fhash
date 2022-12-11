@@ -7,4 +7,4 @@ phash: phash.c phash.h
 
 .PHONY:
 clean:
-	rm -f ashnetd *.o
+	rm -f phash *.o
