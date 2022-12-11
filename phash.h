@@ -114,8 +114,10 @@ struct pmap_insertion{
     _Atomic int* bucket_ins_idx;
     _Atomic int n_entries;
     int target_entries;
-    uint8_t* rdbuf, * wrbuf;
+    int rwbuf_sz;
+    //uint8_t* rdbuf, * wrbuf;
     struct pmi_q pq;
+    pthread_t* pmi_q_pop_threads;
 };
 // hdr will be loaded into memory and used to know
 // how many buckets exist
@@ -153,13 +155,13 @@ void init_pmap(struct pmap* p, char* fn, int n_buckets);
 // col_map must be built with identical data
 // to what will be inserted
 //
-void init_pmap_hdr(struct pmap* p, int n_buckets, int n_threads);
+void init_pmap_hdr(struct pmap* p, int n_buckets, int n_threads, _Bool duplicates_expected);
 void build_pmap_hdr(struct pmap* p, char* key);
 void finalize_col_map(struct pmap* p);
 
 // inserts k/v pair into pmap 
 //void insert_pmap(struct pmap* p, char* key, int val);
-void insert_pmap(struct pmap* p, char* key, int val, uint8_t* rdbuf, uint8_t* wrbuf);
+void insert_pmap(struct pmap* p, char* key, int val, uint8_t* rdbuf, uint8_t* wrbuf, FILE* fp);
 
 
 /* client */
