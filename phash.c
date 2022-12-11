@@ -39,6 +39,8 @@ void init_pmap_hdr(struct pmap* p, int n_buckets, int n_threads){
     // this is then used for each insertion thread to check if it should stop
     // still won't be perfect
     p->hdr.pmi.target_entries = 0;
+    // this will be updated in finalize_col_map()
+    p->hdr.pmi.rwbuf_sz = 0;
     /*p->hdr.pmi.n_entries = 0;*/
     // too high?
     /*we don't know n_entries until after finalize*/
@@ -72,6 +74,7 @@ void write_zeroes(FILE* fp, int nbytes){
 // build the scaffolding that all k/v will fit into
 void finalize_col_map(struct pmap* p){
 	int cur_offset = sizeof(int)+(3*sizeof(int)*p->hdr.n_buckets);
+    // TODO: alloc here?
 	// can i alloc in this loop? i'll need to alloc hdr first
 	// then go back in the end with fseek(wtvr) to overwrite bucket_offset
 	for(int i = 0; i < p->hdr.n_buckets; ++i){
@@ -94,7 +97,12 @@ void finalize_col_map(struct pmap* p){
 		// alloc curr_offset[i]-curr_offset[i-1]
 		write_zeroes(p->fp, p->hdr.col_map[i]*(p->hdr.max_keylen_map[i]+sizeof(int)));
         if(debug)printf("wrote %li zeroes for idx %i\n", p->hdr.col_map[i]*(p->hdr.max_keylen_map[i]+sizeof(int)), i);
+        if(p->hdr.max_keylen_map[i] > p->hdr.pmi.rwbuf_sz){
+            p->hdr.pmi.rwbuf_sz = p->hdr.max_keylen_map[i];
+        }
 	}
+    // add space needed for value - this will grow when we're storing more data
+    p->hdr.pmi.rwbuf_sz += sizeof(int);
 	/*
 	 * todo - write an integer of cur_bucket_idx - 0 at start
 	 * we know total number but not number in progress
@@ -240,7 +248,10 @@ void insert_pmap_queue(struct pmap* p, char* k, int val, uint8_t* rdbuf, uint8_t
 void* insert_pmap_th(void* vpmap){
     // n_threads of these will be spawned - make sure to pass a uniqe FP to each thread
     struct pmap* p = vpmap;
-    _Atomic struct pmi_entry* e;
+    // these are not zeroed, only wrbuf must be zeroed and this is done in insert_pmap()
+    uint8_t* rdbuf = malloc(p->hdr.pmi.rwbuf_sz), * wrbuf = malloc(p->hdr.pmi.rwbuf_sz);
+    _Atomic struct pmi_entry* ae;
+    struct pmi_entry e;
     while(1){
         /*
          * if(atomic_load(&p->hdr.pmi.n_entries) == p->hdr.pmi.target_entries)
@@ -250,13 +261,21 @@ void* insert_pmap_th(void* vpmap){
         // it'll return NULL if ready to exit and it can do its own math
         //
         // we will run each thread until there's no more data to pop(), makes sense
-        e = pop_pmi_q(&p->hdr.pmi.pq);
-        if(!e)break;
+        ae = pop_pmi_q(&p->hdr.pmi.pq);
+        if(!ae)break;
+        // weird that this works but not assigning the pointer
+        e = *atomic_load(&ae);
+        // buffers must be alloc'd up top DO NOT USE the one in hdr
+        // can't be shared like this, there must be one allocated per thread
+        // we can pass along size though, that's what should live in the struct
+        insert_pmap(p, e.key, e.val, rdbuf, wrbuf);
     /*
      * we can check the value of fetch_add() - exit thread if == n_entries
      * and also atomic_load() before iterating
     */
     }
+    free(rdbuf);
+    free(wrbuf);
     return NULL;
 }
 
@@ -482,7 +501,7 @@ int main(){
     /*return 0;*/
 	struct pmap p;
     char str[5];
-    int n_str = 0, tmp_keylen;
+    int n_str = 0;
     uint8_t* rdbuf, * wrbuf;
 	init_pmap(&p, "PM", 100000);
     // inserting 26^4 strings - ~500k
@@ -516,14 +535,6 @@ int main(){
         }
         if(i == 0){
             finalize_col_map(&p);
-            tmp_keylen = 0;
-            for(int j = 0; j < p.hdr.n_buckets; ++j){
-                if(p.hdr.max_keylen_map[j] > tmp_keylen)
-                    tmp_keylen = p.hdr.max_keylen_map[j];
-            }
-            tmp_keylen += sizeof(int);
-            rdbuf = malloc(tmp_keylen);
-            wrbuf = malloc(tmp_keylen);
         }
     }
     printf("generated %i strings\n", n_str);
