@@ -1,5 +1,5 @@
 CC=gcc
-CFLAGS= -Wall -Wextra -Wpedantic -Werror -Wshadow -Wformat=2 -fno-common -g3 -pthread -lpcap 
+CFLAGS= -latomic -Wall -Wextra -Wpedantic -Werror -Wshadow -Wformat=2 -fno-common -g3 -pthread -lpcap 
 
 all: phash 
 
