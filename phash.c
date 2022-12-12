@@ -26,6 +26,7 @@ int hash(char* key, int n_buckets){
  * 11.88M insertions in 1m0.24s,1m9.0000s,1m27.00 in 20 threads with queue capacity of 30000, a little faster, 10 secs
  *
  * sweet spot seems to be 20/20000 1:1000 threads:capacity
+ *
  * can get a little bit of performance out of increasing capacity - try 1:1500 if i have the memory for it
  */
 void init_pmi_q(struct pmi_q* pq, int capacity){
@@ -39,7 +40,15 @@ void init_pmi_q(struct pmi_q* pq, int capacity){
 }
 
 // threads should be less than capacity
-void init_pmap_hdr(struct pmap* p, int n_buckets, int n_threads, _Bool duplicates_expected){
+// TODO: this should take in capacity of pmi_q and set n_threads to equal a ratio of it, capped out at a certain point
+// define max_threads and use sweet spot above, 1:1500
+// TODO: if n_threads <= 0, auto calc using 1:1500
+void init_pmap_hdr(struct pmap* p, int n_buckets, int n_threads, int pq_cap, _Bool duplicates_expected){
+    int adjusted_n_threads;
+
+    if(duplicates_expected)adjusted_n_threads = 1;
+    else adjusted_n_threads = n_threads > pq_cap ? pq_cap : n_threads;
+
 	p->hdr.n_buckets = n_buckets;
 	p->hdr.col_map = calloc(sizeof(int), n_buckets);
 	p->hdr.max_keylen_map = calloc(sizeof(int), n_buckets);
@@ -57,13 +66,14 @@ void init_pmap_hdr(struct pmap* p, int n_buckets, int n_threads, _Bool duplicate
     // too high?
     /*we don't know n_entries until after finalize*/
     /*init_pmi_q(&p->hdr.pmi.pq, n_buckets);*/
-    init_pmi_q(&p->hdr.pmi.pq, 30000);
+    init_pmi_q(&p->hdr.pmi.pq, pq_cap);
     p->hdr.pmi.duplicates_expected = duplicates_expected;
-    p->hdr.pmi.n_threads = duplicates_expected ? 1 : n_threads;
+    p->hdr.pmi.n_threads = adjusted_n_threads;
 }
 
-void init_pmap(struct pmap* p, char* fn, int n_buckets){
-	init_pmap_hdr(p, n_buckets, 20, 0);
+// TODO: elements_in_mem should be provided in terms of bytes
+void init_pmap(struct pmap* p, char* fn, int n_buckets, int n_threads, int elements_in_mem, _Bool duplicates_expected){
+	init_pmap_hdr(p, n_buckets, n_threads, elements_in_mem, duplicates_expected);
 	strncpy(p->fn, fn, sizeof(p->fn)-1);
 	p->fp = fopen(p->fn, "wb");
 	p->insert_ready = 0;
@@ -239,6 +249,7 @@ void insert_pmi_q(struct pmi_q* pq, char* key, int val){
 // returns NULL if all data have been popped
 _Atomic struct pmi_entry* pop_pmi_q(struct pmi_q* pq){
     int idx, capacity;
+    // -O3 demands ret to be assigned to NULL
     _Atomic struct pmi_entry* ret;
     /*atomic_load(pq->pop_idx);*/
     while(pq){
@@ -589,42 +600,45 @@ int main(int argc, char** argv){
         return 0;
     }
 	struct pmap p;
-    char str[5] = {0};
+    char str[6] = {0};
     int n_str = 0;
-	init_pmap(&p, "PM", 100000);
-    // inserting 26^4 strings - ~500k
+	init_pmap(&p, "PM", 100000, 20, 30000, 0);
+    // inserting (26^5)7 strings - ~83.1M takes 4m36s
     for(int i = 0; i < 2; ++i){
         for(char a = 'a'; a <= 'z'; ++a){
             for(char b = 'a'; b <= 'z'; ++b){
                 for(char c = 'a'; c <= 'z'; ++c){
                     for(char d = 'a'; d <= 'z'; ++d){
                         for(char e = 'a'; e <= 'z'; ++e){
-                            /*++n_str;*/
-                            str[0] = a;
-                            str[1] = b;
-                            str[2] = c;
-                            str[3] = d;
-                            str[4] = e;
+                            for(char f = 'a'; f <= 'g'; ++f){
+                                /*++n_str;*/
+                                str[0] = a;
+                                str[1] = b;
+                                str[2] = c;
+                                str[3] = d;
+                                str[4] = e;
+                                str[5] = f;
 
-                            if(i == 0){
-                                build_pmap_hdr(&p, str);
-                            }
-                            else{
-                                ++n_str;
-                                // multithreaded insertions that leverage p.hdr.pmi.pq
-                                /*inesrt_pmap_par();*/
-                                #if 0
-                                insert_pmap(&p, str, a-'a', rdbuf, wrbuf);
-                                threads will be spawned by finalize()
-                                the user will queue insertions - name it somethign good 
-                                queue_insert_pmap() HERE
+                                if(i == 0){
+                                    build_pmap_hdr(&p, str);
+                                }
+                                else{
+                                    ++n_str;
+                                    // multithreaded insertions that leverage p.hdr.pmi.pq
+                                    /*inesrt_pmap_par();*/
+                                    #if 0
+                                    insert_pmap(&p, str, a-'a', rdbuf, wrbuf);
+                                    threads will be spawned by finalize()
+                                    the user will queue insertions - name it somethign good 
+                                    queue_insert_pmap() HERE
 
-                                threads can then be joined by a cleanup function
+                                    threads can then be joined by a cleanup function
 
-                                actual insert will need to grab some FILE*s and fclose()
-                                #endif
-                                insert_pmi_q(&p.hdr.pmi.pq, str, a-'a');
-                                /*printf("\rinserted %.4i", ++n_str);*/
+                                    actual insert will need to grab some FILE*s and fclose()
+                                    #endif
+                                    insert_pmi_q(&p.hdr.pmi.pq, str, a-'a');
+                                    /*printf("\rinserted %.4i", ++n_str);*/
+                                }
                             }
                         }
                     }
