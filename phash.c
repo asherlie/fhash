@@ -18,6 +18,16 @@ int hash(char* key, int n_buckets){
 	return idx % n_buckets;
 }
 
+/*
+ * 11.88M insertions in 57.202s,2m28.329s,59.408s in 20 threads with queue capacity of 1000
+ * 11.88M insertions in 38.558s,0m48.033s,1m5.96s in 20 threads with queue capacity of 20000, clear improvement
+ * 11.88M insertions in 1m0.24s,1m9.0000s,1m27.00 in 40 threads with queue capacity of 20000, slowest
+ * 11.88M insertions in 1m0.24s,1m9.0000s,1m27.00 in 30 threads with queue capacity of 40000, a little faster, 10 secs
+ * 11.88M insertions in 1m0.24s,1m9.0000s,1m27.00 in 20 threads with queue capacity of 30000, a little faster, 10 secs
+ *
+ * sweet spot seems to be 20/20000 1:1000 threads:capacity
+ * can get a little bit of performance out of increasing capacity - try 1:1500 if i have the memory for it
+ */
 void init_pmi_q(struct pmi_q* pq, int capacity){
     pq->ins_idx = pq->pop_idx = 0;
     pq->const_capacity = capacity;
@@ -47,13 +57,13 @@ void init_pmap_hdr(struct pmap* p, int n_buckets, int n_threads, _Bool duplicate
     // too high?
     /*we don't know n_entries until after finalize*/
     /*init_pmi_q(&p->hdr.pmi.pq, n_buckets);*/
-    init_pmi_q(&p->hdr.pmi.pq, 100);
+    init_pmi_q(&p->hdr.pmi.pq, 30000);
     p->hdr.pmi.duplicates_expected = duplicates_expected;
     p->hdr.pmi.n_threads = duplicates_expected ? 1 : n_threads;
 }
 
 void init_pmap(struct pmap* p, char* fn, int n_buckets){
-	init_pmap_hdr(p, n_buckets, 1, 0);
+	init_pmap_hdr(p, n_buckets, 20, 0);
 	strncpy(p->fn, fn, sizeof(p->fn)-1);
 	p->fp = fopen(p->fn, "wb");
 	p->insert_ready = 0;
@@ -219,7 +229,7 @@ void insert_pmi_q(struct pmi_q* pq, char* key, int val){
             break;
     }
     // aha! enqueing correctly but only one char is being popped!
-    printf("enqueued %s: %i\n", key, val);
+    /*printf("enqueued %s: %i\n", key, val);*/
 }
 
 /*
@@ -294,7 +304,7 @@ void* insert_pmap_th(void* vpmap){
          * or 
          * e = *atomic_load(&ae);
         */
-        printf("dequeued %s: %i\n", e.key, e.val);
+        /*printf("dequeued %s: %i\n", e.key, e.val);*/
         // buffers must be alloc'd up top DO NOT USE the one in hdr
         // can't be shared like this, there must be one allocated per thread
         // we can pass along size though, that's what should live in the struct
@@ -584,18 +594,17 @@ int main(int argc, char** argv){
 	init_pmap(&p, "PM", 100000);
     // inserting 26^4 strings - ~500k
     for(int i = 0; i < 2; ++i){
-        for(char a = 'a'; a <= 'd'; ++a){
-//          for(char b = 'a'; b <= 'z'; ++b){
-//              for(char c = 'a'; c <= 'z'; ++c){
-//                  for(char d = 'a'; d <= 'z'; ++d){
-                        /*for(char e = 'a'; e <= 'z'; ++e){*/
+        for(char a = 'a'; a <= 'z'; ++a){
+            for(char b = 'a'; b <= 'z'; ++b){
+                for(char c = 'a'; c <= 'z'; ++c){
+                    for(char d = 'a'; d <= 'z'; ++d){
+                        for(char e = 'a'; e <= 'z'; ++e){
                             /*++n_str;*/
                             str[0] = a;
-                            /*str[1] = b;*/
-                            /*str[2] = c;*/
-                            /*str[3] = d;*/
-                        /*if(a == 'z' && b == 'z' && c == 'z')puts(str);*/
-                            /*str[4] = e;*/
+                            str[1] = b;
+                            str[2] = c;
+                            str[3] = d;
+                            str[4] = e;
 
                             if(i == 0){
                                 build_pmap_hdr(&p, str);
@@ -616,10 +625,10 @@ int main(int argc, char** argv){
                                 #endif
                                 insert_pmi_q(&p.hdr.pmi.pq, str, a-'a');
                                 /*printf("\rinserted %.4i", ++n_str);*/
-                            /*}*/
-//                      }
-//                  }
-//              }
+                            }
+                        }
+                    }
+                }
             }
         }
         if(i == 0){
