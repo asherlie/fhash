@@ -53,7 +53,7 @@ void init_pmap_hdr(struct pmap* p, int n_buckets, int n_threads, _Bool duplicate
 }
 
 void init_pmap(struct pmap* p, char* fn, int n_buckets){
-	init_pmap_hdr(p, n_buckets, 4, 0);
+	init_pmap_hdr(p, n_buckets, 1, 0);
 	strncpy(p->fn, fn, sizeof(p->fn)-1);
 	p->fp = fopen(p->fn, "wb");
 	p->insert_ready = 0;
@@ -187,7 +187,7 @@ void insert_pmi_q(struct pmi_q* pq, char* key, int val){
     _Atomic struct pmi_entry tmp_e = {.key = strdup(key), .val = val};
     // TODO: key must be alloc'd/put into a buffer for this thread
     // TODO: ensure this is freed after insertion
-    atomic_store(&e, &tmp_e);
+    atomic_store(e, tmp_e);
     /*
      * atomic_store(&e->key, strdup(key));
      * atomic_store(&e->val, val);
@@ -218,6 +218,8 @@ void insert_pmi_q(struct pmi_q* pq, char* key, int val){
         if(atomic_compare_exchange_strong(pq->entries+idx, &ne, e))
             break;
     }
+    // aha! enqueing correctly but only one char is being popped!
+    printf("enqueued %s: %i\n", key, val);
 }
 
 /*
@@ -266,14 +268,6 @@ _Atomic struct pmi_entry* pop_pmi_q(struct pmi_q* pq){
     return ret;
 }
 
-void insert_pmap_queue(struct pmap* p, char* k, int val, uint8_t* rdbuf, uint8_t* wrbuf){
-    (void)p;
-    (void)k;
-    (void)val;
-    (void)rdbuf;
-    (void)wrbuf;
-}
-
 // rdbuf/wrbuf are now contained in p->hdr.pmi
 void* insert_pmap_th(void* vpmap){
     // n_threads of these will be spawned - make sure to pass a uniqe FP to each thread
@@ -295,7 +289,12 @@ void* insert_pmap_th(void* vpmap){
         ae = pop_pmi_q(&p->hdr.pmi.pq);
         if(!ae)break;
         // weird that this works but not assigning the pointer
-        e = *atomic_load(&ae);
+        e = atomic_load(ae);
+        /* which is correct?
+         * or 
+         * e = *atomic_load(&ae);
+        */
+        printf("dequeued %s: %i\n", e.key, e.val);
         // buffers must be alloc'd up top DO NOT USE the one in hdr
         // can't be shared like this, there must be one allocated per thread
         // we can pass along size though, that's what should live in the struct
@@ -422,6 +421,13 @@ void insert_pmap(struct pmap* p, char* key, int val, uint8_t* rdbuf, uint8_t* wr
         fseek(fp, kv_sz*ins_idx, SEEK_CUR);
         fwrite(wrbuf, kv_sz, 1, fp);
         // why are there duplicates? keys being inserted multiple times
+        // okay, only one of each is being inserted, see print statement at end of insert_pmi_q()
+        // okay, we're inserting only one "zzzz" into the queue
+        // but popping many
+        //
+        // see if i can reproduce this in a single thread
+        // okay, still happening with only one thread which is good news because it's not a concurrency problem
+        // it's probably a data struct problem
         /*printf("inserted %s into bucket[%i]:%i\n", key, idx, ins_idx);*/
     }
     fflush(fp);
@@ -546,11 +552,28 @@ void pmi_q_test(){
     }
 }
 
+void bad_pop_test(){
+    struct pmi_q pq;
+    _Atomic struct pmi_entry* ae;
+    struct pmi_entry e;
+    init_pmi_q(&pq, 2);
+    pq.pop_target = 2;
+
+    insert_pmi_q(&pq, "a", 0);
+    insert_pmi_q(&pq, "b", 1);
+
+    for(int i = 0; i < pq.pop_target; ++i){
+        ae = pop_pmi_q(&pq);
+        //if(!ae)return;
+        e = *atomic_load(&ae);
+        printf("%s %i\n", e.key, e.val);
+    }
+}
+
 int main(int argc, char** argv){
-    /*
-     * pmi_q_test();
-     * return 1;
-    */
+    /*pmi_q_test();*/
+    /*bad_pop_test();*/
+    /*return 1;*/
     if(argc > 1){
         lookup_test("PM", argv[1]);
         return 0;
@@ -561,16 +584,16 @@ int main(int argc, char** argv){
 	init_pmap(&p, "PM", 100000);
     // inserting 26^4 strings - ~500k
     for(int i = 0; i < 2; ++i){
-        for(char a = 'a'; a <= 'z'; ++a){
-            for(char b = 'a'; b <= 'z'; ++b){
-                for(char c = 'a'; c <= 'z'; ++c){
-                    for(char d = 'a'; d <= 'z'; ++d){
+        for(char a = 'a'; a <= 'd'; ++a){
+//          for(char b = 'a'; b <= 'z'; ++b){
+//              for(char c = 'a'; c <= 'z'; ++c){
+//                  for(char d = 'a'; d <= 'z'; ++d){
                         /*for(char e = 'a'; e <= 'z'; ++e){*/
                             /*++n_str;*/
                             str[0] = a;
-                            str[1] = b;
-                            str[2] = c;
-                            str[3] = d;
+                            /*str[1] = b;*/
+                            /*str[2] = c;*/
+                            /*str[3] = d;*/
                         /*if(a == 'z' && b == 'z' && c == 'z')puts(str);*/
                             /*str[4] = e;*/
 
@@ -594,9 +617,9 @@ int main(int argc, char** argv){
                                 insert_pmi_q(&p.hdr.pmi.pq, str, a-'a');
                                 /*printf("\rinserted %.4i", ++n_str);*/
                             /*}*/
-                        }
-                    }
-                }
+//                      }
+//                  }
+//              }
             }
         }
         if(i == 0){
