@@ -10,6 +10,8 @@ void* insert_pmap_th(void* vpmap);
 
 const _Bool debug = 0;
 
+// a great way to keep size of file down with varying keylengths would be to have a bucket that very large
+// keys go into
 int hash(char* key, int n_buckets){
 	int idx = 0;
 	for(char* i = key; *i; ++i){
@@ -204,6 +206,7 @@ void insert_pmi_q(struct pmi_q* pq, char* key, int val){
     int idx, capacity;
     _Atomic struct pmi_entry* ne, * e = malloc(sizeof(struct pmi_entry));
     // TODO: key must be free()d after insertion
+    // key isn't freed!
     _Atomic struct pmi_entry tmp_e = {.key = strdup(key), .val = val};
     // TODO: key must be alloc'd/put into a buffer for this thread
     // TODO: ensure this is freed after insertion
@@ -235,8 +238,25 @@ void insert_pmi_q(struct pmi_q* pq, char* key, int val){
         // if our ins_idx is NULL, we can update the entry
         // otherwise, keep iterating
         ne = NULL;
+        // TODO: could this be replaced with just atomic_store(), idx is already reserved
+        // nvm, could have been NULLified by a popper or could have been taken already
+        // need to cas() to ensure that it's not occupied since we're not 
         if(atomic_compare_exchange_strong(pq->entries+idx, &ne, e))
             break;
+        /*
+         * atomic_store();
+         * i can use atomic_store for both insert and pop()
+         * because once i reserve an index it won't be written to from another pop/insert()
+         * is this okay with NULL entries?
+         *
+         * think about the implications of this with pops/insertions and eachother
+         *
+         * i think there's no need to check if entries+idx == NULL, we can assume it is
+         * we can just check nonatomically
+         * can we just assume it's null if we've been given access?
+         * no because we need to coordinate with pop thread
+         *
+        */
     }
     // aha! enqueing correctly but only one char is being popped!
     /*printf("enqueued %s: %i\n", key, val);*/
@@ -311,6 +331,7 @@ void* insert_pmap_th(void* vpmap){
         if(!ae)break;
         // weird that this works but not assigning the pointer
         e = atomic_load(ae);
+        free(ae);
         /* which is correct?
          * or 
          * e = *atomic_load(&ae);
@@ -350,9 +371,11 @@ void insert_pmap(struct pmap* p, char* key, int val, uint8_t* rdbuf, uint8_t* wr
     */
     /* zero the section of wrbuf we'll be using */
     memset(wrbuf, 0, kv_sz);
+    /*free key mem*/
     // shouldn't be necessary but helps debugging
     /*memset(rdbuf, 0, kv_sz);*/
 	memcpy(wrbuf, key, strlen(key));
+    free(key);
 	memcpy(wrbuf+p->hdr.max_keylen_map[idx], &val, sizeof(int));
 	cur_offset = p->hdr.bucket_offset[idx];
 	fseek(fp, cur_offset, SEEK_SET);
@@ -389,7 +412,7 @@ void insert_pmap(struct pmap* p, char* key, int val, uint8_t* rdbuf, uint8_t* wr
     //  if we can enable duplicate detection only for updates!
     //
     //  write a better hash()
-	if(debug)printf("seeking to offset %i for key \"%s\"\n", cur_offset, key);
+	/*if(debug)printf("seeking to offset %i for key \"%s\"\n", cur_offset, key);*/
 	if(debug)printf("idx is %i with max keylen: %i\n", idx, p->hdr.max_keylen_map[idx]);
 	// iterate over all entries in a bucket looking for duplicates
 	// if none are found, insert at idx 0
@@ -459,9 +482,15 @@ void insert_pmap(struct pmap* p, char* key, int val, uint8_t* rdbuf, uint8_t* wr
 }
 
 // this is from the client perspective
+// possibly don't need to load all the header info in if we're doing a single read
+// pop key: "asher"
+//  idx = hash(key)
+//  fseek(fp, sizeof(int)*idx)
+//  fread(fp, bucket_len);
+//  bucket_sz = d
 void load_pmap(struct pmap* p, char* fn){
     strcpy(p->fn, fn);
-    p->fp = fopen(fn, "rb+");
+    p->fp = fopen(fn, "rb");
     fread(&p->hdr.n_buckets, sizeof(int), 1, p->fp);
     p->hdr.col_map = malloc(sizeof(int)*p->hdr.n_buckets);
     p->hdr.max_keylen_map = malloc(sizeof(int)*p->hdr.n_buckets);
@@ -477,19 +506,63 @@ int lookup_pmap(const struct pmap* p, char* key){
     int idx = hash(key, p->hdr.n_buckets);
     int kv_sz = sizeof(int)+p->hdr.max_keylen_map[idx];;
     char* rdbuf = malloc(kv_sz);
+    /*printf("seeking to %i\n", p->hdr.bucket_offset[idx]);*/
     fseek(p->fp, p->hdr.bucket_offset[idx], SEEK_SET);
 
 	for(int i = 0; i < p->hdr.col_map[idx]; ++i){
         fread(rdbuf, 1, kv_sz, p->fp);
-        if(!strncmp(rdbuf, key, p->hdr.max_keylen_map[idx]))
+        if(!strncmp(rdbuf, key, p->hdr.max_keylen_map[idx])){
+            //printf("%s: %i %i/%i, %i, %i\n", rdbuf, p->hdr.bucket_offset[idx], i, p->hdr.col_map[idx], p->hdr.max_keylen_map[idx], kv_sz);
             return *((int*)(rdbuf+p->hdr.max_keylen_map[idx]));
+        }
     }
     return -1;
 }
 
-void lookup_test(char* fn, char* key){
+// this can be run without load_pmap()
+int partial_load_lookup_pmap(FILE* fp, char* key){
+    int n_buckets, idx, bucket_width, max_keylen, offset, tmpval;
+    int kv_sz;
+    char* rdbuf;
+    fread(&n_buckets, sizeof(int), 1, fp);
+    idx = hash(key, n_buckets);
+    // seek to col_map[idx]
+    fseek(fp, (1+idx)*sizeof(int), SEEK_SET);
+    fread(&bucket_width, sizeof(int), 1, fp);
+    // seek to max_keylen_map[idx]
+    fseek(fp, sizeof(int)+sizeof(int)*n_buckets+(sizeof(int)*idx), SEEK_SET);
+    fread(&max_keylen, sizeof(int), 1, fp);
+    // seek to bucket_offset[idx]
+    fseek(fp, sizeof(int)+(sizeof(int)*2*n_buckets)+(sizeof(int)*idx), SEEK_SET);
+    fread(&offset, sizeof(int), 1, fp);
+
+    kv_sz = max_keylen+sizeof(int);
+    rdbuf = malloc(kv_sz);
+
+    /*printf("seeking to %i\n", offset);*/
+    fseek(fp, offset, SEEK_SET);
+    for(int i = 0; i < bucket_width; ++i){
+        /*fread(rdbuf, 1, kv_sz, fp);*/
+        fread(rdbuf, 1, max_keylen, fp);
+        fread(&tmpval, 1, sizeof(int), fp);
+        if(!strncmp(rdbuf, key, max_keylen)){
+            //printf("%s: %i %i/%i, %i, %i\n", rdbuf, offset, i, bucket_width, max_keylen, kv_sz);
+            return tmpval;
+        }
+    }
+    return -1;
+}
+
+void lookup_test(char* fn, char* key, _Bool partial){
     struct pmap p;
     int val;
+
+    if(partial){
+        FILE* fp;
+        printf("val: %i\n", partial_load_lookup_pmap(fp = fopen(fn, "rb"), key));
+        fclose(fp);
+        return;
+    }
     load_pmap(&p, fn);
     val = lookup_pmap(&p, key);
     printf("VAL: %i\n", val);
@@ -596,13 +669,13 @@ int main(int argc, char** argv){
     /*bad_pop_test();*/
     /*return 1;*/
     if(argc > 1){
-        lookup_test("PM", argv[1]);
+        lookup_test("PM", argv[1], 0);
         return 0;
     }
 	struct pmap p;
     char str[6] = {0};
     int n_str = 0;
-	init_pmap(&p, "PM", 100000, 20, 30000, 0);
+	init_pmap(&p, "PM", 10000, 30, 45000, 0);
     // inserting (26^5)7 strings - ~83.1M takes 4m36s
     for(int i = 0; i < 2; ++i){
         for(char a = 'a'; a <= 'z'; ++a){
