@@ -103,6 +103,14 @@ we are going to need to use locks anyway due to cond_wait acquiring one
     //volatile _Bool finished;
 };
 
+struct locking_pmi_q{
+    /*_Atomic*/ struct pmi_entry** entries;
+    int cap, sz, pop_idx, ins_idx;
+    pthread_mutex_t lock;
+    pthread_cond_t pop_ready;
+    pthread_cond_t ins_ready;
+};
+
 struct pmap_insertion{
     // if duplicates are expected, opt for the more conservative mutex lock
     // in case of collision
@@ -117,6 +125,7 @@ struct pmap_insertion{
     int rwbuf_sz;
     //uint8_t* rdbuf, * wrbuf;
     struct pmi_q pq;
+    struct locking_pmi_q lpq;
     pthread_t* pmi_q_pop_threads;
 };
 // hdr will be loaded into memory and used to know

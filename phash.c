@@ -41,6 +41,73 @@ void init_pmi_q(struct pmi_q* pq, int capacity){
     /*pq->finished = 0;*/
 }
 
+// TODO: try with a linked list, less useless iteration
+// and we can guarantee size with locks
+// weird iteration is a good test though to see which is faster even
+// when lock free should have the advantage
+void init_lpi_q(struct locking_pmi_q* lpq, int cap){
+    lpq->cap = cap;
+    lpq->sz = 0;
+    lpq->pop_idx = 0;
+    lpq->ins_idx = 1;
+    pthread_mutex_init(&lpq->lock, NULL);
+    pthread_cond_init(&lpq->pop_ready, NULL);
+    pthread_cond_init(&lpq->ins_ready, NULL);
+    lpq->entries = calloc(sizeof(struct pmi_entry*), cap);
+}
+
+// blocks until we have space to insert
+// good exercise to write this, haven't played around with cond_t in a while
+// interested in seeing if this is faster than lfq due to cpu overuse
+void insert_lpi_q(struct locking_pmi_q* lpq, char* key, int val){
+    struct pmi_entry* e = malloc(sizeof(struct pmi_entry));
+    e->key = key;
+    e->val = val;
+    pthread_mutex_lock(&lpq->lock);
+    while(1){
+
+        /*
+         * [1,2,ins_idx, _, _]
+         * []
+         * pop = 0
+        */
+
+        if(lpq->ins_idx == lpq->pop_idx || (lpq->ins_idx == lpq->cap && lpq->pop_idx == 0)){
+        /*if(lpq->sz == lpq->cap){*/
+            pthread_cond_wait(&lpq->ins_ready, &lpq->lock);
+            // could have been spuriously woken up, continue
+            // so that we can check - lock is acquired after return
+            continue;
+        }
+        if(lpq->ins_idx == lpq->cap)
+            lpq->ins_idx = 0;
+        lpq->entries[lpq->ins_idx++] = e;
+        ++lpq->sz;
+        pthread_cond_signal(&lpq->pop_ready);
+
+        break;
+    }
+    pthread_mutex_unlock(&lpq->lock);
+}
+
+// blocks until an entry appears unless we've reached expected
+struct pmi_entry* pop_lpi_q(struct locking_pmi_q* lpq){
+    struct pmi_entry* ret;
+    pthread_mutex_lock(&lpq->lock);
+    while(1){
+        if(!lpq->sz){
+            pthread_cond_wait(&lpq->pop_ready, &lpq->lock);
+            continue;
+        }
+        if(lpq->pop_idx == lpq->cap)
+            lpq->pop_idx = 0;
+        ret = lpq->entries[lpq->pop_idx++];
+        break;
+    }
+    pthread_mutex_unlock(&lpq->lock);
+    return ret;
+}
+
 // threads should be less than capacity
 // TODO: this should take in capacity of pmi_q and set n_threads to equal a ratio of it, capped out at a certain point
 // define max_threads and use sweet spot above, 1:1500
@@ -69,6 +136,7 @@ void init_pmap_hdr(struct pmap* p, int n_buckets, int n_threads, int pq_cap, _Bo
     /*we don't know n_entries until after finalize*/
     /*init_pmi_q(&p->hdr.pmi.pq, n_buckets);*/
     init_pmi_q(&p->hdr.pmi.pq, pq_cap);
+    init_lpi_q(&p->hdr.pmi.lpq, pq_cap);
     p->hdr.pmi.duplicates_expected = duplicates_expected;
     p->hdr.pmi.n_threads = adjusted_n_threads;
 }
@@ -121,6 +189,10 @@ void finalize_col_map(struct pmap* p){
 		// number of items per idx * (reserved space per key + value int)
 		cur_offset += (p->hdr.col_map[i]*(p->hdr.max_keylen_map[i]+sizeof(int)));
 	}
+    /*
+     * offset can be calculated during insertion pass, everything can be aside from max_keylen
+     * which can be preset by the user
+    */
 	/* write header */
 	fwrite(&p->hdr.n_buckets, sizeof(int), 1, p->fp);
 	fwrite(p->hdr.col_map, sizeof(int), p->hdr.n_buckets, p->fp);
@@ -664,7 +736,27 @@ void bad_pop_test(){
     }
 }
 
+void test_lpi_q(){
+    struct locking_pmi_q lpq;
+    init_lpi_q(&lpq, 40);
+
+    for(int i = 0; i < 30; ++i){
+        insert_lpi_q(&lpq, "ashini", 99);
+        printf("inserted %i\n", i);
+    }
+    for(int i = 0; i < 20; ++i){
+        pop_lpi_q(&lpq);
+        printf("inserted %i\n", i);
+    }
+    for(int i = 0; i < 30; ++i){
+        insert_lpi_q(&lpq, "ashini", 99);
+        printf("inserted %i\n", i);
+    }
+}
+
 int main(int argc, char** argv){
+    test_lpi_q();
+    return 1;
     /*pmi_q_test();*/
     /*bad_pop_test();*/
     /*return 1;*/
