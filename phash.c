@@ -9,6 +9,7 @@
 void* insert_pmap_th(void* vpmap);
 
 const _Bool debug = 0;
+const _Bool locking = 0;
 
 // a great way to keep size of file down with varying keylengths would be to have a bucket that very large
 // keys go into
@@ -49,21 +50,59 @@ void init_lpi_q(struct locking_pmi_q* lpq, int cap){
     lpq->cap = cap;
     lpq->sz = 0;
     lpq->pop_idx = 0;
-    lpq->ins_idx = 1;
+    lpq->ins_idx = 0;
+    lpq->n_popped = 0;
+    // this is updated during building of pmap_hdr
+    lpq->pop_target = 0;
     pthread_mutex_init(&lpq->lock, NULL);
     pthread_cond_init(&lpq->pop_ready, NULL);
     pthread_cond_init(&lpq->ins_ready, NULL);
-    lpq->entries = calloc(sizeof(struct pmi_entry*), cap);
+    lpq->entries = calloc(sizeof(struct pmi_entry*), lpq->cap);
 }
 
 // blocks until we have space to insert
 // good exercise to write this, haven't played around with cond_t in a while
 // interested in seeing if this is faster than lfq due to cpu overuse
+//
+// we insert from beginning
+// [1,2,3,4,_,_,_]
+// 
+// we pop from beginning
+// [_,2,3,4,_,_]
+//
+// if pop == cap, pop = 0
+// pop waits if pop_idx is null
+//
+// ins waits if ins == cap
+//
+//[1,_,_,4,5,6]
+//[1,_,_,4,5,6]
+// p         i 
+//
+// []
+// ins 1
+// [1 ]
+//  pi
+//  pop
+//  []
+//  ins 1, 2, 3
+//  [1,2,3,_,_]
+//   p   i
+//   pop
+//  [_,2,3,_,_]
+//     p   i
+//   pop
+//  [_,_,3,4,5]
+//   i   p 
+//
+//   if i == p, i must wait for p to pop
+//
 void insert_lpi_q(struct locking_pmi_q* lpq, char* key, int val){
     struct pmi_entry* e = malloc(sizeof(struct pmi_entry));
-    e->key = key;
+    e->key = strdup(key);
     e->val = val;
     pthread_mutex_lock(&lpq->lock);
+    /*if(lpq->ins_idx == lpq->cap)lpq->ins_idx = 0;*/
     while(1){
 
         /*
@@ -72,16 +111,24 @@ void insert_lpi_q(struct locking_pmi_q* lpq, char* key, int val){
          * pop = 0
         */
 
-        if(lpq->ins_idx == lpq->pop_idx || (lpq->ins_idx == lpq->cap && lpq->pop_idx == 0)){
+        /*if(lpq->ins_idx == lpq->pop_idx || (lpq->ins_idx == lpq->cap && lpq->pop_idx == 0)){*/
         /*if(lpq->sz == lpq->cap){*/
+        if(lpq->ins_idx == lpq->cap){
+            lpq->ins_idx = 0;
+            /*printf("ins: %i->%i\n", lpq->cap, lpq->ins_idx);*/
+        }
+        // we shouldn't wait in this case, pop() should
+        /*if(lpq->ins_idx == lpq->pop_idx){*/
+        if(lpq->sz == lpq->cap){
             pthread_cond_wait(&lpq->ins_ready, &lpq->lock);
             // could have been spuriously woken up, continue
             // so that we can check - lock is acquired after return
             continue;
         }
-        if(lpq->ins_idx == lpq->cap)
-            lpq->ins_idx = 0;
+        // at this point, i != p, guaranteed
         lpq->entries[lpq->ins_idx++] = e;
+        /*printf("ins: %i->%i\n", lpq->ins_idx-1, lpq->ins_idx);*/
+        /*printf("pop: %i, sz: %i\n", lpq->pop_idx, lpq->sz);*/
         ++lpq->sz;
         pthread_cond_signal(&lpq->pop_ready);
 
@@ -90,21 +137,46 @@ void insert_lpi_q(struct locking_pmi_q* lpq, char* key, int val){
     pthread_mutex_unlock(&lpq->lock);
 }
 
+// [1,2,3,4,5,_,_,_]
+//  p         i
+// [_,_,_,_,_,_,_,_]
+//          p i
 // blocks until an entry appears unless we've reached expected
+// what if this didn't return a malloc()d variable and was instead passed
 struct pmi_entry* pop_lpi_q(struct locking_pmi_q* lpq){
-    struct pmi_entry* ret;
+    struct pmi_entry* ret = NULL;
+    _Bool finished;
     pthread_mutex_lock(&lpq->lock);
-    while(1){
+    while(lpq->n_popped != lpq->pop_target){
+        if(lpq->pop_idx == lpq->cap){
+            lpq->pop_idx = 0;
+            /*printf("pop: %i->%i\n", lpq->cap, lpq->pop_idx);*/
+        }
         if(!lpq->sz){
+            /*not returning NULL*/
+            ret = NULL;
             pthread_cond_wait(&lpq->pop_ready, &lpq->lock);
             continue;
         }
-        if(lpq->pop_idx == lpq->cap)
-            lpq->pop_idx = 0;
-        ret = lpq->entries[lpq->pop_idx++];
+        ret = lpq->entries[lpq->pop_idx];
+        // stuck in cont loop here
+        if(!ret){
+            /*printf("sz %i, pop idx %i\n", lpq->sz, lpq->pop_idx);*/
+            continue;
+        }
+        lpq->entries[lpq->pop_idx++] = NULL;
+        /*printf("pop: %i->%i\n", lpq->pop_idx-1, lpq->pop_idx);*/
+        pthread_cond_signal(&lpq->ins_ready);
+        ++lpq->n_popped;
+        --lpq->sz;
         break;
     }
+    finished = lpq->n_popped == lpq->pop_target;
     pthread_mutex_unlock(&lpq->lock);
+    if(finished){
+        pthread_cond_broadcast(&lpq->pop_ready);
+        /*ret = NULL;*/
+    }
     return ret;
 }
 
@@ -157,6 +229,7 @@ void build_pmap_hdr(struct pmap* p, char* key){
     // TODO: this can be removed, target_entries is not used
     ++p->hdr.pmi.target_entries;
     ++p->hdr.pmi.pq.pop_target;
+    ++p->hdr.pmi.lpq.pop_target;
 	if(keylen > p->hdr.max_keylen_map[idx])
 		p->hdr.max_keylen_map[idx] = keylen;
 }
@@ -229,16 +302,20 @@ void finalize_col_map(struct pmap* p){
 }
 
 // frees memory and joins threads used for pmap insertion
-void cleanup_pmi(struct pmap* p){
+struct timespec cleanup_pmi(struct pmap* p){
+    struct timespec join_time;
     for(int i = 0; i < p->hdr.pmi.n_threads; ++i){
         pthread_join(p->hdr.pmi.pmi_q_pop_threads[i], NULL);
     }
+    clock_gettime(CLOCK_MONOTONIC, &join_time);
 
     free(p->hdr.bucket_offset);
     free(p->hdr.max_keylen_map);
     free(p->hdr.col_map);
 
     free(p->hdr.pmi.bucket_ins_idx);
+
+    return join_time;
 }
 
 _Bool mempty(uint8_t* buf, int len){
@@ -274,8 +351,10 @@ _Bool mempty(uint8_t* buf, int len){
 
 // TODO: should these use mutex locks instead of atomic operations?
 // does using cpu time negatively impact actual insertion into phash?
-void insert_pmi_q(struct pmi_q* pq, char* key, int val){
-    int idx, capacity;
+// keep track of attempts per thread and insertions per thread
+// returns attempts
+int insert_pmi_q(struct pmi_q* pq, char* key, int val){
+    int idx, capacity, attempts = 0;
     _Atomic struct pmi_entry* ne, * e = malloc(sizeof(struct pmi_entry));
     // TODO: key must be free()d after insertion
     // key isn't freed!
@@ -290,6 +369,7 @@ void insert_pmi_q(struct pmi_q* pq, char* key, int val){
     /*e->key = strdup(key);*/
     /*e->val = val;*/
     while(1){
+        ++attempts;
         // reset to 0 if neccessary
         /*pq->capacity = pq->const_capacity;*/
         /*atomic_store(&pq->capacity, pq->const_capacity);*/
@@ -330,8 +410,10 @@ void insert_pmi_q(struct pmi_q* pq, char* key, int val){
          *
         */
     }
+    /*printf("\rinserted in idx %i", idx);*/
     // aha! enqueing correctly but only one char is being popped!
     /*printf("enqueued %s: %i\n", key, val);*/
+    return attempts;
 }
 
 /*
@@ -339,11 +421,13 @@ void insert_pmi_q(struct pmi_q* pq, char* key, int val){
  * try to reproduce issue with sequential writes
 */
 // returns NULL if all data have been popped
+// print number of tries for pop/insert
 _Atomic struct pmi_entry* pop_pmi_q(struct pmi_q* pq){
     int idx, capacity;
     // -O3 demands ret to be assigned to NULL
-    _Atomic struct pmi_entry* ret;
+    _Atomic struct pmi_entry* ret = NULL;
     /*atomic_load(pq->pop_idx);*/
+    // was this always the condition?
     while(pq){
         if(atomic_load(&pq->n_popped) == pq->pop_target)
             return NULL;
@@ -384,6 +468,7 @@ _Atomic struct pmi_entry* pop_pmi_q(struct pmi_q* pq){
 // rdbuf/wrbuf are now contained in p->hdr.pmi
 void* insert_pmap_th(void* vpmap){
     // n_threads of these will be spawned - make sure to pass a uniqe FP to each thread
+    int insertions = 0;
     struct pmap* p = vpmap;
     // these are not zeroed, only wrbuf must be zeroed and this is done in insert_pmap()
     uint8_t* rdbuf = malloc(p->hdr.pmi.rwbuf_sz), * wrbuf = malloc(p->hdr.pmi.rwbuf_sz);
@@ -399,11 +484,21 @@ void* insert_pmap_th(void* vpmap){
         // it'll return NULL if ready to exit and it can do its own math
         //
         // we will run each thread until there's no more data to pop(), makes sense
-        ae = pop_pmi_q(&p->hdr.pmi.pq);
-        if(!ae)break;
-        // weird that this works but not assigning the pointer
-        e = atomic_load(ae);
-        free(ae);
+        if(!locking){
+            ae = pop_pmi_q(&p->hdr.pmi.pq);
+            if(!ae)break;
+            // weird that this works but not assigning the pointer
+            e = atomic_load(ae);
+            free(ae);
+        }
+        else{
+            struct pmi_entry* ep = pop_lpi_q(&p->hdr.pmi.lpq);
+            if(!ep)break;
+            e.key = ep->key;
+            /*printf("popped %s\n", e.key);*/
+            e.val = ep->val;
+            free(ep);
+        }
         /* which is correct?
          * or 
          * e = *atomic_load(&ae);
@@ -414,6 +509,7 @@ void* insert_pmap_th(void* vpmap){
         // we can pass along size though, that's what should live in the struct
         /*printf("inserting %s:%i\n", e.key, e.val);*/
         insert_pmap(p, e.key, e.val, rdbuf, wrbuf, fp);
+        ++insertions;
     /*
      * we can check the value of fetch_add() - exit thread if == n_entries
      * and also atomic_load() before iterating
@@ -422,6 +518,7 @@ void* insert_pmap_th(void* vpmap){
     fclose(fp);
     free(rdbuf);
     free(wrbuf);
+    /*printf("%i insertions from thread x\n", insertions);*/
     return NULL;
 }
 
@@ -435,6 +532,7 @@ void insert_pmap(struct pmap* p, char* key, int val, uint8_t* rdbuf, uint8_t* wr
 	int idx = hash(key, p->hdr.n_buckets), ins_idx;
 	int kv_sz = p->hdr.max_keylen_map[idx]+sizeof(int);
 	int cur_offset;
+    int slen;
     long int br;
     int dupes = 0;
     /*
@@ -442,15 +540,21 @@ void insert_pmap(struct pmap* p, char* key, int val, uint8_t* rdbuf, uint8_t* wr
 	 * uint8_t* wrbuf = calloc(kv_sz, 1);
     */
     /* zero the section of wrbuf we'll be using */
-    memset(wrbuf, 0, kv_sz);
+    /*memset(wrbuf, 0, kv_sz);*/
+    // zero keylen
+    // we can also just pre-calculate strlen and zero only what isn't used
+    slen = strnlen(key, p->hdr.max_keylen_map[idx]);
+    /*slen = 4;*/
+    /*memset(wrbuf, 0, p->hdr.max_keylen_map[idx]);*/
+    /*printf("memsetting %i\n", p->hdr.max_keylen_map[idx]-slen);*/
+    memset(wrbuf+slen, 0, p->hdr.max_keylen_map[idx]-slen);
     /*free key mem*/
     // shouldn't be necessary but helps debugging
     /*memset(rdbuf, 0, kv_sz);*/
-	memcpy(wrbuf, key, strlen(key));
+    memcpy(wrbuf, key, slen);
     free(key);
 	memcpy(wrbuf+p->hdr.max_keylen_map[idx], &val, sizeof(int));
 	cur_offset = p->hdr.bucket_offset[idx];
-	fseek(fp, cur_offset, SEEK_SET);
     // future work:
     //
     // store n_entries in hdr
@@ -493,6 +597,7 @@ void insert_pmap(struct pmap* p, char* key, int val, uint8_t* rdbuf, uint8_t* wr
     // the following loop is used only if duplicates are expected, it is NOT threadsafe
     // if duplicates are expected, n_threads must be set to 1
     if(p->hdr.pmi.duplicates_expected){
+        fseek(fp, cur_offset, SEEK_SET);
         for(int i = 0; i < p->hdr.col_map[idx]; ++i){
             br = fread(rdbuf, 1, kv_sz, fp);
             if(debug)printf("    %i/%i: read %li/%i bytes\n", i, p->hdr.col_map[idx], br, kv_sz);
@@ -526,6 +631,7 @@ void insert_pmap(struct pmap* p, char* key, int val, uint8_t* rdbuf, uint8_t* wr
             }
         }
 	}
+    rewrite with file descriptors!!
     // threadsafe insertion into atomically reserved index
     else{
         // because we have pre-allocated space for every element we don't have to
@@ -534,8 +640,8 @@ void insert_pmap(struct pmap* p, char* key, int val, uint8_t* rdbuf, uint8_t* wr
         ins_idx = atomic_fetch_add(p->hdr.pmi.bucket_ins_idx+idx, 1);
          /*wrbuf is ready to fwrite, just need to write into cur_offset+(kv_sz*ins_idx)*/
         // TODO: 
-        fseek(fp, kv_sz*ins_idx, SEEK_CUR);
-        fwrite(wrbuf, kv_sz, 1, fp);
+        fseek(fp, cur_offset+(kv_sz*ins_idx), SEEK_SET);
+        fwrite_unlocked(wrbuf, kv_sz, 1, fp);
         // why are there duplicates? keys being inserted multiple times
         // okay, only one of each is being inserted, see print statement at end of insert_pmi_q()
         // okay, we're inserting only one "zzzz" into the queue
@@ -546,7 +652,7 @@ void insert_pmap(struct pmap* p, char* key, int val, uint8_t* rdbuf, uint8_t* wr
         // it's probably a data struct problem
         /*printf("inserted %s into bucket[%i]:%i\n", key, idx, ins_idx);*/
     }
-    fflush(fp);
+    /*fflush(fp);*/
     /*
      * fclose(p->fp);
      * p->fp = fopen(p->fn, "rb+");
@@ -738,36 +844,77 @@ void bad_pop_test(){
 
 void test_lpi_q(){
     struct locking_pmi_q lpq;
-    init_lpi_q(&lpq, 40);
+    init_lpi_q(&lpq, 30000);
+    lpq.pop_target = 30+30;
 
     for(int i = 0; i < 30; ++i){
         insert_lpi_q(&lpq, "ashini", 99);
         printf("inserted %i\n", i);
     }
     for(int i = 0; i < 20; ++i){
-        pop_lpi_q(&lpq);
-        printf("inserted %i\n", i);
+        printf("popped: %s\n", pop_lpi_q(&lpq)->key);
     }
     for(int i = 0; i < 30; ++i){
         insert_lpi_q(&lpq, "ashini", 99);
+        pop_lpi_q(&lpq);
         printf("inserted %i\n", i);
     }
 }
 
 int main(int argc, char** argv){
-    test_lpi_q();
-    return 1;
+    /*
+     * test_lpi_q();
+     * return 1;
+    */
     /*pmi_q_test();*/
     /*bad_pop_test();*/
     /*return 1;*/
     if(argc > 1){
-        lookup_test("PM", argv[1], 0);
+        lookup_test("PM", argv[1], 1);
         return 0;
     }
 	struct pmap p;
     char str[6] = {0};
     int n_str = 0;
-	init_pmap(&p, "PM", 10000, 30, 45000, 0);
+    int attempts = 0;
+    double elapsed;
+    struct timespec st, fin;
+    /*
+     * locking took about the same time as lock free! with 45000 cap and 30 threads:
+     *     locking: 3m49s
+     *
+     * 145000 cap:
+     *      locking: 4m10s -- this should be thrown out, was inserting into both and popping from locked
+     *
+     * 145000 cap and 90 threads: without [5]
+     *      locking: 28.4s
+     *
+     * 45000 cap and 90 threads: without [5]
+     *      locking: 29.8s
+     *      lock free: 
+     *
+     * 45000 cap and 10 threads: without [5]
+     *      locking: 29.8s
+     *      lock free: 
+    */
+
+    // no diff in run time based on n_threads, weird - even 1 thread is within seconds
+    // 1 thread:
+    //  1m3 
+    // 2
+    //  54s
+    // 3
+    //  42s
+    // 4
+    //  40s
+    // 5
+    //  42
+    // 6
+    // can't let thread count get too high while keeping capcity low or they compete over slots to pop from
+    // TODO: these should be dynamically chosen using expected insertions and max_threads and memory
+    init_pmap(&p, "PM", 1024, 32, 65536, 0);
+    /*init_pmap(&p, "PM", 10000, 20, 450000, 0);*/
+	/*init_pmap(&p, "PM", 10000, 1, 1000, 0);*/
     // inserting (26^5)7 strings - ~83.1M takes 4m36s
     for(int i = 0; i < 2; ++i){
         for(char a = 'a'; a <= 'z'; ++a){
@@ -775,14 +922,14 @@ int main(int argc, char** argv){
                 for(char c = 'a'; c <= 'z'; ++c){
                     for(char d = 'a'; d <= 'z'; ++d){
                         for(char e = 'a'; e <= 'z'; ++e){
-                            for(char f = 'a'; f <= 'g'; ++f){
+                            /*for(char f = 'a'; f <= 'g'; ++f){*/
                                 /*++n_str;*/
                                 str[0] = a;
                                 str[1] = b;
                                 str[2] = c;
                                 str[3] = d;
                                 str[4] = e;
-                                str[5] = f;
+                                /*str[5] = f;*/
 
                                 if(i == 0){
                                     build_pmap_hdr(&p, str);
@@ -801,10 +948,14 @@ int main(int argc, char** argv){
 
                                     actual insert will need to grab some FILE*s and fclose()
                                     #endif
-                                    insert_pmi_q(&p.hdr.pmi.pq, str, a-'a');
+                                    if(!locking){
+                                        attempts += insert_pmi_q(&p.hdr.pmi.pq, str, a-'a'+e-'a');
+                                        /*printf("\rinserted idx %i", n_str-1);*/
+                                    }
+                                    else insert_lpi_q(&p.hdr.pmi.lpq, str, a-'a');
                                     /*printf("\rinserted %.4i", ++n_str);*/
                                 }
-                            }
+                            /*}*/
                         }
                     }
                 }
@@ -812,10 +963,17 @@ int main(int argc, char** argv){
         }
         if(i == 0){
             finalize_col_map(&p);
+            puts("beginning expensive insertions");
+            clock_gettime(CLOCK_MONOTONIC, &st);
         }
     }
+    fin = cleanup_pmi(&p);
+    elapsed = fin.tv_sec-st.tv_sec;
+    elapsed += (fin.tv_nsec-st.tv_nsec)/1000000000.0;
     printf("generated %i strings\n", n_str);
-    cleanup_pmi(&p);
+    printf("%i unfruitful lock free queue insertion attempts\n", attempts-n_str);
+    printf("relevant insertion took %lf seconds\n", elapsed);
+    /*this isn't accurrate actually - need to stop clock after joins*/
 	/*build_pmap_hdr(&p, "ashini");*/
     /*
 	 * build_pmap_hdr(&p, "baby");

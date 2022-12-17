@@ -106,6 +106,7 @@ we are going to need to use locks anyway due to cond_wait acquiring one
 struct locking_pmi_q{
     /*_Atomic*/ struct pmi_entry** entries;
     int cap, sz, pop_idx, ins_idx;
+    int n_popped, pop_target;
     pthread_mutex_t lock;
     pthread_cond_t pop_ready;
     pthread_cond_t ins_ready;
@@ -167,7 +168,8 @@ void init_pmap(struct pmap* p, char* fn, int n_buckets, int n_threads, int eleme
 void init_pmap_hdr(struct pmap* p, int n_buckets, int n_threads, int pq_cap, _Bool duplicates_expected);
 void build_pmap_hdr(struct pmap* p, char* key);
 void finalize_col_map(struct pmap* p);
-void cleanup_pmi(struct pmap* p);
+//void cleanup_pmi(struct pmap* p);
+struct timespec cleanup_pmi(struct pmap* p);
 
 // inserts k/v pair into pmap 
 //void insert_pmap(struct pmap* p, char* key, int val);
