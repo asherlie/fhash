@@ -30,11 +30,15 @@ void seal(){
     seal_pmap(&P);
 }
 
-/*
- * void load_pmap(struct pmap* p, char* fn);
- * int lookup_pmap(const struct pmap* p, char* key);
-*/
-int lookup(char* fn, char* key){
+void load(char* fn){
+    load_pmap(&P, fn);
+}
+
+int lookup(char* key){
+    return lookup_pmap(&P, key);
+}
+
+int lookup_quick(char* fn, char* key){
     FILE* fp = fopen(fn, "rb");
     return partial_load_lookup_pmap(fp, key);
 }

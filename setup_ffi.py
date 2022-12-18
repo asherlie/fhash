@@ -10,7 +10,9 @@ void build_hdr(char*);
 void finalize_hdr();
 void insert(char*, int);
 void seal();
-int lookup(char*, char*);
+int lookup_quick(char*, char*);
+void load(char*);
+int lookup(char*);
 """,
 sources = ['phash.c', 'pyffi.c'],
 library_dirs = [],
@@ -23,7 +25,9 @@ void build_hdr(char*);
 void finalize_hdr();
 void insert(char*, int);
 void seal();
-int lookup(char*, char*);
+int lookup_quick(char*, char*);
+void load(char*);
+int lookup(char*);
 """)
 
 # ffibuilder.cdef("""
@@ -42,4 +46,4 @@ phash.finalize_hdr();
 phash.insert(b"asher", 900)
 phash.insert(b"eteri", 141)
 phash.seal()
-print(phash.lookup(b"FOOFOO", b"asher"))
+print(phash.lookup_quick(b"FOOFOO", b"asher"))
