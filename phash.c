@@ -255,6 +255,7 @@ _Bool mempty(uint8_t* buf, int len){
 }
 
 /* returns attempts needed for an insertion */
+// should be renamed to insert_pmap
 int insert_pmi_q(struct pmi_q* pq, char* key, int val){
     int idx, capacity, attempts = 0;
     _Atomic struct pmi_entry* ne, * e = malloc(sizeof(struct pmi_entry));
@@ -336,51 +337,14 @@ _Atomic struct pmi_entry* pop_pmi_q(struct pmi_q* pq){
     return ret;
 }
 
-/*
- * each thread could be assigned a range of buckets so they can compete less
- * or each thread can be given a thread id and use modulus to find operation window
-*/
-void* insert_pmap_th(void* vpmap){
-    int insertions = 0;
-    struct pmap* p = vpmap;
-    /* only wrbuf must be zeroed and this is done in insert_pmap() */
-    uint8_t* rdbuf = malloc(p->hdr.pmi.rwbuf_sz), * wrbuf = malloc(p->hdr.pmi.rwbuf_sz);
-    int fd = open(p->fn, p->hdr.pmi.duplicates_expected ? O_RDWR : O_WRONLY);
-    _Atomic struct pmi_entry* ae;
-    struct pmi_entry e;
-    while(1){
-        /*
-         * pop_pmi_q busy waits - we can just check to see if we should exit!
-         * it'll return NULL if ready to exit and it can do its own math
-         * each thread pops/inserts until there's no more data to pop()
-        */
-        if(!locking){
-            ae = pop_pmi_q(&p->hdr.pmi.pq);
-            if(!ae)break;
-            e = atomic_load(ae);
-            free(ae);
-        }
-        else{
-            struct pmi_entry* ep = pop_lpi_q(&p->hdr.pmi.lpq);
-            if(!ep)break;
-            e.key = ep->key;
-            e.val = ep->val;
-            free(ep);
-        }
-        insert_pmap(p, e.key, e.val, rdbuf, wrbuf, fd);
-        ++insertions;
-    }
-    close(fd);
-    free(rdbuf);
-    free(wrbuf);
-    return NULL;
-}
+/* user facing functions start with pmap */
+/*void pmap_insert();*/
 
 /*
  * p->fp is no longer used in insert_pmap but can't be removed because it's still used in reading
  * operations - load/lookup() and in building the map hdr
 */
-void insert_pmap(struct pmap* p, char* key, int val, uint8_t* rdbuf, uint8_t* wrbuf, int fd){
+void insert_pmap_internal(struct pmap* p, char* key, int val, uint8_t* rdbuf, uint8_t* wrbuf, int fd){
 	int idx = hash(key, p->hdr.n_buckets), ins_idx;
 	int kv_sz = p->hdr.max_keylen_map[idx]+sizeof(int);
 	int cur_offset;
@@ -404,6 +368,7 @@ void insert_pmap(struct pmap* p, char* key, int val, uint8_t* rdbuf, uint8_t* wr
     */
     
 	if(debug)printf("idx is %i with max keylen: %i\n", idx, p->hdr.max_keylen_map[idx]);
+    /* TODO: use mutex locks if(duplicates) to enable > 1 thread */
     /* if duplicates are expected, n_threads must be set to 1 - the following code isn't threadsafe */
     if(p->hdr.pmi.duplicates_expected){
         lseek(fd, cur_offset, SEEK_SET);
@@ -435,6 +400,46 @@ void insert_pmap(struct pmap* p, char* key, int val, uint8_t* rdbuf, uint8_t* wr
         lseek(fd, cur_offset+(kv_sz*ins_idx), SEEK_SET);
         write(fd, wrbuf, kv_sz);
     }
+}
+
+/*
+ * each thread could be assigned a range of buckets so they can compete less
+ * or each thread can be given a thread id and use modulus to find operation window
+*/
+void* insert_pmap_th(void* vpmap){
+    int insertions = 0;
+    struct pmap* p = vpmap;
+    /* only wrbuf must be zeroed and this is done in insert_pmap_internal() */
+    uint8_t* rdbuf = malloc(p->hdr.pmi.rwbuf_sz), * wrbuf = malloc(p->hdr.pmi.rwbuf_sz);
+    int fd = open(p->fn, p->hdr.pmi.duplicates_expected ? O_RDWR : O_WRONLY);
+    _Atomic struct pmi_entry* ae;
+    struct pmi_entry e;
+    while(1){
+        /*
+         * pop_pmi_q busy waits - we can just check to see if we should exit!
+         * it'll return NULL if ready to exit and it can do its own math
+         * each thread pops/inserts until there's no more data to pop()
+        */
+        if(!locking){
+            ae = pop_pmi_q(&p->hdr.pmi.pq);
+            if(!ae)break;
+            e = atomic_load(ae);
+            free(ae);
+        }
+        else{
+            struct pmi_entry* ep = pop_lpi_q(&p->hdr.pmi.lpq);
+            if(!ep)break;
+            e.key = ep->key;
+            e.val = ep->val;
+            free(ep);
+        }
+        insert_pmap_internal(p, e.key, e.val, rdbuf, wrbuf, fd);
+        ++insertions;
+    }
+    close(fd);
+    free(rdbuf);
+    free(wrbuf);
+    return NULL;
 }
 
 /* TODO: this should optionally just allocate space for the header
@@ -517,6 +522,7 @@ void lookup_test(char* fn, char* key, _Bool partial){
     fclose(p.fp);
 }
 
+// test functions msut go in a separate test file
 _Atomic int insertions = 0, pops = 0;
 void* insert_pmi_thread(void* vpq){
     struct pmi_q* pq = vpq;
@@ -641,13 +647,13 @@ int main(int argc, char** argv){
             for(char b = 'a'; b <= 'z'; ++b){
                 for(char c = 'a'; c <= 'z'; ++c){
                     for(char d = 'a'; d <= 'z'; ++d){
-                        for(char e = 'a'; e <= 'z'; ++e){
-                            /*for(char f = 'a'; f <= 'g'; ++f){*/
+                        /*for(char e = 'a'; e <= 'z'; ++e){*/
+                            /*for(char f = '0'; f <= '7'; ++f){*/
                                 str[0] = a;
                                 str[1] = b;
                                 str[2] = c;
                                 str[3] = d;
-                                str[4] = e;
+                                /*str[4] = e;*/
                                 /*str[5] = f;*/
 
                                 if(i == 0){
@@ -656,12 +662,12 @@ int main(int argc, char** argv){
                                 else{
                                     ++n_str;
                                     if(!locking){
-                                        attempts += insert_pmi_q(&p.hdr.pmi.pq, str, a-'a'+e-'a');
+                                        attempts += insert_pmi_q(&p.hdr.pmi.pq, str, a-'a'+c-'a');
                                     }
                                     else insert_lpi_q(&p.hdr.pmi.lpq, str, a-'a');
                                 }
                             /*}*/
-                        }
+                        /*}*/
                     }
                 }
             }
