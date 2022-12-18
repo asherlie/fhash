@@ -144,9 +144,11 @@ void init_pmap_hdr(struct pmap* p, int n_buckets, int n_threads, int pq_cap, _Bo
 
     p->hdr.pmi.bucket_ins_idx = calloc(sizeof(int), n_buckets);
     /* this will be updated in finalize_pmap_hdr() */
-    p->hdr.pmi.rwbuf_sz = 0;
     init_pmi_q(&p->hdr.pmi.pq, pq_cap);
     init_lpi_q(&p->hdr.pmi.lpq, pq_cap);
+
+    p->hdr.pmi.rwbuf_sz = 0;
+    p->hdr.pmi.max_bucket_len = 0;
     p->hdr.pmi.duplicates_expected = duplicates_expected;
     p->hdr.pmi.n_threads = adjusted_n_threads;
 }
@@ -166,6 +168,8 @@ void build_pmap_hdr(struct pmap* p, char* key){
     ++p->hdr.pmi.lpq.pop_target;
 	if(keylen > p->hdr.max_keylen_map[idx])
 		p->hdr.max_keylen_map[idx] = keylen;
+    if(p->hdr.col_map[idx] > p->hdr.pmi.max_bucket_len)
+        p->hdr.pmi.max_bucket_len = p->hdr.col_map[idx];
 }
 
 /* spawns threads to pop queue and insert into phash */
@@ -204,7 +208,8 @@ void finalize_pmap_hdr(struct pmap* p){
      * rwbuf_sz = max_keylen+sizeof(values)
      */
     p->hdr.pmi.rwbuf_sz += sizeof(int);
-    zerobuf = calloc(p->hdr.pmi.rwbuf_sz, 1);
+
+    zerobuf = calloc(p->hdr.pmi.rwbuf_sz, p->hdr.pmi.max_bucket_len);
 
     /*
      * offset can be calculated during insertion pass, everything can be aside from max_keylen
@@ -219,6 +224,9 @@ void finalize_pmap_hdr(struct pmap* p){
 
 	/* writing bucket array */
 	for(int i = 0; i < p->hdr.n_buckets; ++i){
+        /* n_buckets can be set very high without much negative impact because if zero elements end 
+         * up in a given bucket, the bucket will only take up 4 bytes of disk space
+         */
         write(fd, zerobuf, p->hdr.col_map[i]*(p->hdr.max_keylen_map[i]+sizeof(int)));
         if(debug)printf("wrote %li zeroes for idx %i\n", p->hdr.col_map[i]*(p->hdr.max_keylen_map[i]+sizeof(int)), i);
 	}

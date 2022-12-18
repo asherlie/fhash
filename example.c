@@ -138,7 +138,7 @@ int main(int argc, char** argv){
     /* can't let thread count get too high while keeping capcity low or they compete over slots to pop from */
     /* TODO: these should be dynamically chosen using expected insertions and max_threads and memory */
     /* 3/4 threads seems good for this - at 9.7s for 11M */
-    init_pmap(&p, "PM", 1024, 5, 524288, 0);
+    init_pmap(&p, "PM", 10240, 5, 524288, 0);
     /* inserting (26^5)7 strings - ~83.1M takes 4m36s */
     for(int i = 0; i < 2; ++i){
         for(char a = 'a'; a <= 'z'; ++a){

@@ -39,7 +39,7 @@ struct pmap_insertion{
     /* used to reserve insertion indices per bucket */
     _Atomic int* bucket_ins_idx;
     _Atomic int n_entries;
-    int rwbuf_sz;
+    int rwbuf_sz, max_bucket_len;
     struct pmi_q pq;
     struct locking_pmi_q lpq;
     pthread_t* pmi_q_pop_threads;
