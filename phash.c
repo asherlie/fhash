@@ -255,7 +255,6 @@ _Bool mempty(uint8_t* buf, int len){
 }
 
 /* returns attempts needed for an insertion */
-// should be renamed to insert_pmap
 int insert_pmi_q(struct pmi_q* pq, char* key, int val){
     int idx, capacity, attempts = 0;
     _Atomic struct pmi_entry* ne, * e = malloc(sizeof(struct pmi_entry));
@@ -337,8 +336,9 @@ _Atomic struct pmi_entry* pop_pmi_q(struct pmi_q* pq){
     return ret;
 }
 
-/* user facing functions start with pmap */
-/*void pmap_insert();*/
+void insert_pmap(struct pmap* p, char* key, int val){
+    insert_pmi_q(&p->hdr.pmi.pq, key, val);
+}
 
 /*
  * p->fp is no longer used in insert_pmap but can't be removed because it's still used in reading
@@ -522,7 +522,7 @@ void lookup_test(char* fn, char* key, _Bool partial){
     fclose(p.fp);
 }
 
-// test functions msut go in a separate test file
+// TODO: test functions msut go in a separate test file
 _Atomic int insertions = 0, pops = 0;
 void* insert_pmi_thread(void* vpq){
     struct pmi_q* pq = vpq;
@@ -662,7 +662,7 @@ int main(int argc, char** argv){
                                 else{
                                     ++n_str;
                                     if(!locking){
-                                        attempts += insert_pmi_q(&p.hdr.pmi.pq, str, a-'a'+c-'a');
+                                        insert_pmap(&p, str, a-'a'+d-'a');
                                     }
                                     else insert_lpi_q(&p.hdr.pmi.lpq, str, a-'a');
                                 }

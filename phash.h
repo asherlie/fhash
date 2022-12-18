@@ -80,9 +80,7 @@ void build_pmap_hdr(struct pmap* p, char* key);
 void finalize_pmap_hdr(struct pmap* p);
 struct timespec cleanup_pmi(struct pmap* p);
 
-void insert_pmap(struct pmap* p, char* key, int val, uint8_t* rdbuf, uint8_t* wrbuf, int fd);
-
-
 /* client */
+void insert_pmap(struct pmap* p, char* key, int val);
 void load_pmap(struct pmap* p, char* fn);
 int lookup_pmap(const struct pmap* p, char* key);
