@@ -2,40 +2,8 @@
 #include <stdint.h>
 #include <pthread.h>
 
-// this is included only if we're generating a pmap - it contains:
-// _Atomic int bucket_ins_idx[n_buckets]
-// which is used for thread safety - although this only works assuming
-// there can be no duplicates because if we just atomically grab in ins idx
-// we can't compare
-// WAIT we can actually, we can just iterate over existing data - reads are always safe
-// go thru, check if duplicate. if so, 
-//
-// OKAY, might be approaching this wrong. i can potentially just do the lock free index reserving
-// approach and ignore the prospect of duplicates
-// if they're possible, we can do a scan of the entire map afterwards and nvm... too expensive to compare
-// all keys within a bucket
-//
-// the goal is to make it safe to check for duplicates whie other threads are writin
-// we can use a linked list to assign indices because it will be easy to give up an assigned one
-// if we don't need one
-//
-// okay:
-//  verify key isn't an exact duplicate:
-//      reserve an idx
-//      write k/v pair to new idx
-//  else
-//      update value - cas(
-//
-// safe though would be to just have pthreads for each bucket and lock when accessing them
-// we can safely check for dupes
-//
-// maybe this can be done if duplicates are allowed
-// otherwise, go lock free and very fast
-//
-//  THIS IS THE MOVE IT SEEMS - go lock free if no dupes, otherwise just use locks per bucket
-
-// this is the same as pmi_entry... remove one
-// TODO: separate out pmi_q code/defs
+/* this is the same as pmi_entry... remove one */
+/* TODO: separate out pmi_q code/defs */
 struct pmi_entry{
     char* key;
     int val;
@@ -97,10 +65,6 @@ we are going to need to use locks anyway due to cond_wait acquiring one
     _Atomic int n_popped;
 
     _Atomic struct pmi_entry** entries;
-
-    // weird place for this, but we can stop waiting for a pop if we set this var
-    //init this!!
-    //volatile _Bool finished;
 };
 
 struct locking_pmi_q{
@@ -122,9 +86,7 @@ struct pmap_insertion{
     // used to reserve insertion indices per bucket
     _Atomic int* bucket_ins_idx;
     _Atomic int n_entries;
-    int target_entries;
     int rwbuf_sz;
-    //uint8_t* rdbuf, * wrbuf;
     struct pmi_q pq;
     struct locking_pmi_q lpq;
     pthread_t* pmi_q_pop_threads;
@@ -148,6 +110,13 @@ struct pmap_hdr{
     struct pmap_insertion pmi;
 };
 
+/*
+ * IMPORTANT: i should use #defines to make this modular, look into xandr code
+ * user must define a (packed?) struct
+ * or maybe they can just pass in a struct and its size
+ *
+ * TODO: i must be able to pass in keys/values and this should work with abstract data/arbitrary structs
+*/
 struct pmap_entry{
 	//int key_len;
 	char* key;
@@ -168,7 +137,7 @@ void init_pmap(struct pmap* p, char* fn, int n_buckets, int n_threads, int eleme
 //
 void init_pmap_hdr(struct pmap* p, int n_buckets, int n_threads, int pq_cap, _Bool duplicates_expected);
 void build_pmap_hdr(struct pmap* p, char* key);
-void finalize_col_map(struct pmap* p);
+void finalize_pmap_hdr(struct pmap* p);
 //void cleanup_pmi(struct pmap* p);
 struct timespec cleanup_pmi(struct pmap* p);
 
