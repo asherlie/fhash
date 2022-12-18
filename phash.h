@@ -84,4 +84,4 @@ struct timespec seal_pmap(struct pmap* p);
 
 void load_pmap(struct pmap* p, char* fn);
 int lookup_pmap(const struct pmap* p, char* key);
-int partial_load_lookup_pmap(FILE* fp, char* key);
+int partial_load_lookup_pmap(int fd, char* key);

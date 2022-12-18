@@ -483,30 +483,29 @@ int lookup_pmap(const struct pmap* p, char* key){
 
 /* this can be run without load_pmap() */
 /* TODO: partial loads should incrementally build headers */
-/* TODO: this should not use FILE*s */ 
-int partial_load_lookup_pmap(FILE* fp, char* key){
+int partial_load_lookup_pmap(int fd, char* key){
     int n_buckets, idx, bucket_width, max_keylen, offset, tmpval;
     int kv_sz;
     char* rdbuf;
-    fread(&n_buckets, sizeof(int), 1, fp);
+    read(fd, &n_buckets, sizeof(int));
     idx = hash(key, n_buckets);
     /* seek to col_map[idx] */
-    fseek(fp, (1+idx)*sizeof(int), SEEK_SET);
-    fread(&bucket_width, sizeof(int), 1, fp);
+    lseek(fd, (1+idx)*sizeof(int), SEEK_SET);
+    read(fd, &bucket_width, sizeof(int));
     /* seek to max_keylen_map[idx] */
-    fseek(fp, sizeof(int)+sizeof(int)*n_buckets+(sizeof(int)*idx), SEEK_SET);
-    fread(&max_keylen, sizeof(int), 1, fp);
+    lseek(fd, sizeof(int)+sizeof(int)*n_buckets+(sizeof(int)*idx), SEEK_SET);
+    read(fd, &max_keylen, sizeof(int));
     /* seek to bucket_offset[idx] */
-    fseek(fp, sizeof(int)+(sizeof(int)*2*n_buckets)+(sizeof(int)*idx), SEEK_SET);
-    fread(&offset, sizeof(int), 1, fp);
+    lseek(fd, sizeof(int)+(sizeof(int)*2*n_buckets)+(sizeof(int)*idx), SEEK_SET);
+    read(fd, &offset, sizeof(int));
 
     kv_sz = max_keylen+sizeof(int);
     rdbuf = malloc(kv_sz);
 
-    fseek(fp, offset, SEEK_SET);
+    lseek(fd, offset, SEEK_SET);
     for(int i = 0; i < bucket_width; ++i){
-        fread(rdbuf, 1, max_keylen, fp);
-        fread(&tmpval, 1, sizeof(int), fp);
+        read(fd, rdbuf, max_keylen);
+        read(fd, &tmpval, sizeof(int));
         if(!strncmp(rdbuf, key, max_keylen)){
             return tmpval;
         }
