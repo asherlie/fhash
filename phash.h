@@ -154,6 +154,7 @@ struct pmap_entry{
 	int val;
 };
 
+//get rid of FILE*, use pread() if i must
 struct pmap{
 	_Bool insert_ready;
 	char fn[50];
@@ -173,7 +174,8 @@ struct timespec cleanup_pmi(struct pmap* p);
 
 // inserts k/v pair into pmap 
 //void insert_pmap(struct pmap* p, char* key, int val);
-void insert_pmap(struct pmap* p, char* key, int val, uint8_t* rdbuf, uint8_t* wrbuf, FILE* fp);
+//void insert_pmap(struct pmap* p, char* key, int val, uint8_t* rdbuf, uint8_t* wrbuf, FILE* fp);
+void insert_pmap(struct pmap* p, char* key, int val, uint8_t* rdbuf, uint8_t* wrbuf, int fd);
 
 
 /* client */
