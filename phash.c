@@ -155,7 +155,6 @@ void init_pmap_hdr(struct pmap* p, int n_buckets, int n_threads, int pq_cap, _Bo
 void init_pmap(struct pmap* p, char* fn, int n_buckets, int n_threads, int elements_in_mem, _Bool duplicates_expected){
 	init_pmap_hdr(p, n_buckets, n_threads, elements_in_mem, duplicates_expected);
 	strncpy(p->fn, fn, sizeof(p->fn)-1);
-	p->fp = fopen(p->fn, "wb");
 	p->insert_ready = 0;
 }
 
@@ -185,8 +184,9 @@ void spawn_pmi_q_pop_threads(struct pmap* p){
  * seek/write after
 */
 void finalize_pmap_hdr(struct pmap* p){
-	int cur_offset = sizeof(int)+(3*sizeof(int)*p->hdr.n_buckets);
+    int cur_offset = sizeof(int)+(3*sizeof(int)*p->hdr.n_buckets);
     uint8_t* zerobuf;
+    int fd = open(p->fn, O_WRONLY | O_CREAT | O_TRUNC);
     /*
 	 * can i alloc in this loop? i'll need to alloc hdr first
 	 * then go back in the end with fseek() to overwrite bucket_offset
@@ -212,19 +212,18 @@ void finalize_pmap_hdr(struct pmap* p){
     */
 
 	/* write header */
-	fwrite(&p->hdr.n_buckets, sizeof(int), 1, p->fp);
-	fwrite(p->hdr.col_map, sizeof(int), p->hdr.n_buckets, p->fp);
-	fwrite(p->hdr.max_keylen_map, sizeof(int), p->hdr.n_buckets, p->fp);
-	fwrite(p->hdr.bucket_offset, sizeof(int), p->hdr.n_buckets, p->fp);
+	write(fd, &p->hdr.n_buckets, sizeof(int));
+	write(fd, p->hdr.col_map, sizeof(int) * p->hdr.n_buckets);
+	write(fd, p->hdr.max_keylen_map, sizeof(int) * p->hdr.n_buckets);
+	write(fd, p->hdr.bucket_offset, sizeof(int) * p->hdr.n_buckets);
 
 	/* writing bucket array */
 	for(int i = 0; i < p->hdr.n_buckets; ++i){
-        fwrite(zerobuf, p->hdr.col_map[i]*(p->hdr.max_keylen_map[i]+sizeof(int)), 1, p->fp);
+        write(fd, zerobuf, p->hdr.col_map[i]*(p->hdr.max_keylen_map[i]+sizeof(int)));
         if(debug)printf("wrote %li zeroes for idx %i\n", p->hdr.col_map[i]*(p->hdr.max_keylen_map[i]+sizeof(int)), i);
 	}
     free(zerobuf);
-    fclose(p->fp);
-    p->fp = fopen(p->fn, "rb+");
+    close(fd);
     spawn_pmi_q_pop_threads(p);
 	p->insert_ready = 1;
 }
@@ -454,30 +453,34 @@ void* insert_pmap_th(void* vpmap){
  * and wait for partial loads to populate it as needed
  */
 void load_pmap(struct pmap* p, char* fn){
+    int fd = open(fn, O_RDONLY);
     strcpy(p->fn, fn);
-    p->fp = fopen(fn, "rb");
-    fread(&p->hdr.n_buckets, sizeof(int), 1, p->fp);
+    read(fd, &p->hdr.n_buckets, sizeof(int));
     p->hdr.col_map = malloc(sizeof(int)*p->hdr.n_buckets);
     p->hdr.max_keylen_map = malloc(sizeof(int)*p->hdr.n_buckets);
     p->hdr.bucket_offset = malloc(sizeof(int)*p->hdr.n_buckets);
 
-    fread(p->hdr.col_map, sizeof(int), p->hdr.n_buckets, p->fp);
-    fread(p->hdr.max_keylen_map, sizeof(int), p->hdr.n_buckets, p->fp);
-    fread(p->hdr.bucket_offset, sizeof(int), p->hdr.n_buckets, p->fp);
+    read(fd, p->hdr.col_map, sizeof(int) * p->hdr.n_buckets);
+    read(fd, p->hdr.max_keylen_map, sizeof(int) * p->hdr.n_buckets);
+    read(fd, p->hdr.bucket_offset, sizeof(int) * p->hdr.n_buckets);
+
+    close(fd);
 }
 
 int lookup_pmap(const struct pmap* p, char* key){
     int idx = hash(key, p->hdr.n_buckets);
-    int kv_sz = sizeof(int)+p->hdr.max_keylen_map[idx];;
+    int fd = open(p->fn, O_RDONLY);
+    int kv_sz = sizeof(int)+p->hdr.max_keylen_map[idx];
     char* rdbuf = malloc(kv_sz);
-    fseek(p->fp, p->hdr.bucket_offset[idx], SEEK_SET);
+    lseek(fd, p->hdr.bucket_offset[idx], SEEK_SET);
 
 	for(int i = 0; i < p->hdr.col_map[idx]; ++i){
-        fread(rdbuf, 1, kv_sz, p->fp);
+        read(fd, rdbuf, kv_sz);
         if(!strncmp(rdbuf, key, p->hdr.max_keylen_map[idx])){
             return *((int*)(rdbuf+p->hdr.max_keylen_map[idx]));
         }
     }
+    close(fd);
     return -1;
 }
 

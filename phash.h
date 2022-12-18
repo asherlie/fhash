@@ -68,14 +68,13 @@ struct pmap_entry{
 	int val;
 };
 
-/* TODO: get rid of FILE* */
 struct pmap{
 	_Bool insert_ready;
 	char fn[50];
-	FILE* fp;
 	struct pmap_hdr hdr;
 };
 
+/* TODO: potentially roll together init/build, insert/finalize - they can check if(_) and run operations */
 void init_pmap(struct pmap* p, char* fn, int n_buckets, int n_threads, int elements_in_mem, _Bool duplicates_expected);
 void build_pmap_hdr(struct pmap* p, char* key);
 void finalize_pmap_hdr(struct pmap* p);

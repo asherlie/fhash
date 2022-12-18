@@ -1,10 +1,13 @@
 CC=gcc
-CFLAGS= -latomic -Wall -Wextra -Wpedantic -Werror -Wshadow -Wformat=2 -fno-common -g3 -pthread -lpcap 
+#CFLAGS= -latomic -Wall -Wextra -Wpedantic -Werror -Wshadow -Wformat=2 -fno-common -fprofile-arcs -ftest-coverage -pthread
+#CFLAGS= -latomic -Wall -Wextra -Wpedantic -Werror -Wshadow -Wformat=2 -fno-common -Ofast -pthread
+CFLAGS= -latomic -Wall -Wextra -Wpedantic -Werror -Wshadow -Wformat=2 -fno-common -g3 -pthread
 
-all: phash 
+#all: phash phash.so
+all: example
 
-phash: phash.c phash.h
+example: phash.c phash.h example.c
 
 .PHONY:
 clean:
-	rm -f phash *.o
+	rm -f example *.o

@@ -37,7 +37,7 @@ class Phash:
         return lphash.lookup_quick(self.fn, bytes(key, 'utf-8'))
 
 n = 0
-ph = Phash('storage')
+ph = Phash('storage', threads=70, entries=100000)
 if len(sys.argv) > 1:
     print(ph.lookup(sys.argv[1]))
 else:

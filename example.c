@@ -1,4 +1,5 @@
 #include <fcntl.h>
+#include <unistd.h>
 
 #include "phash.h"
 
@@ -113,12 +114,12 @@ void lookup_test(char* fn, char* key, _Bool partial){
     if(partial){
         int fd = open(fn, O_RDONLY);
         printf("val: %i\n", partial_load_lookup_pmap(fd, key));
+        close(fd);
         return;
     }
     load_pmap(&p, fn);
     val = lookup_pmap(&p, key);
     printf("VAL: %i\n", val);
-    fclose(p.fp);
 }
 
 int main(int argc, char** argv){
@@ -181,5 +182,4 @@ int main(int argc, char** argv){
     printf("generated %i strings\n", n_str);
     printf("%i unfruitful lock free queue insertion attempts\n", attempts-n_str);
     printf("relevant insertion took %lf seconds\n", elapsed);
-    fclose(p.fp);
 }
