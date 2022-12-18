@@ -65,56 +65,12 @@ void init_lpi_q(struct locking_pmi_q* lpq, int cap){
     lpq->entries = calloc(sizeof(struct pmi_entry*), lpq->cap);
 }
 
-// blocks until we have space to insert
-// interested in seeing if this is faster than lfq due to cpu overuse
-//
-// we insert from beginning
-// [1,2,3,4,_,_,_]
-// 
-// we pop from beginning
-// [_,2,3,4,_,_]
-//
-// if pop == cap, pop = 0
-// pop waits if pop_idx is null
-//
-// ins waits if ins == cap
-//
-//[1,_,_,4,5,6]
-//[1,_,_,4,5,6]
-// p         i 
-//
-// []
-// ins 1
-// [1 ]
-//  pi
-//  pop
-//  []
-//  ins 1, 2, 3
-//  [1,2,3,_,_]
-//   p   i
-//   pop
-//  [_,2,3,_,_]
-//     p   i
-//   pop
-//  [_,_,3,4,5]
-//   i   p 
-//
-//   if i == p, i must wait for p to pop
-//
 void insert_lpi_q(struct locking_pmi_q* lpq, char* key, int val){
     struct pmi_entry* e = malloc(sizeof(struct pmi_entry));
     e->key = strdup(key);
     e->val = val;
     pthread_mutex_lock(&lpq->lock);
-    /*if(lpq->ins_idx == lpq->cap)lpq->ins_idx = 0;*/
     while(1){
-
-        /*
-         * [1,2,ins_idx, _, _]
-         * []
-         * pop = 0
-        */
-
         if(lpq->ins_idx == lpq->cap){
             lpq->ins_idx = 0;
         }
@@ -188,7 +144,7 @@ void init_pmap_hdr(struct pmap* p, int n_buckets, int n_threads, int pq_cap, _Bo
 	p->hdr.bucket_offset = calloc(sizeof(int), n_buckets);
 
     p->hdr.pmi.bucket_ins_idx = calloc(sizeof(int), n_buckets);
-    // this will be updated in finalize_pmap_hdr()
+    /* this will be updated in finalize_pmap_hdr() */
     p->hdr.pmi.rwbuf_sz = 0;
     init_pmi_q(&p->hdr.pmi.pq, pq_cap);
     init_lpi_q(&p->hdr.pmi.lpq, pq_cap);
@@ -477,7 +433,6 @@ void insert_pmap(struct pmap* p, char* key, int val, uint8_t* rdbuf, uint8_t* wr
         */
         ins_idx = atomic_fetch_add(p->hdr.pmi.bucket_ins_idx+idx, 1);
         /* wrbuf is ready to write, just need to write into cur_offset+(kv_sz*ins_idx) */
-        // TODO: 
         lseek(fd, cur_offset+(kv_sz*ins_idx), SEEK_SET);
         write(fd, wrbuf, kv_sz);
     }
@@ -681,7 +636,7 @@ int main(int argc, char** argv){
     /* TODO: these should be dynamically chosen using expected insertions and max_threads and memory */
     /* 3/4 threads seems good for this - at 9.7s for 11M */
     init_pmap(&p, "PM", 1024, 5, 524288, 0);
-    // inserting (26^5)7 strings - ~83.1M takes 4m36s
+    /* inserting (26^5)7 strings - ~83.1M takes 4m36s */
     for(int i = 0; i < 2; ++i){
         for(char a = 'a'; a <= 'z'; ++a){
             for(char b = 'a'; b <= 'z'; ++b){
