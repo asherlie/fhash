@@ -152,7 +152,6 @@ struct pmi_entry* pop_lpi_q(struct locking_pmi_q* lpq){
     while(lpq->n_popped != lpq->pop_target){
         if(lpq->pop_idx == lpq->cap){
             lpq->pop_idx = 0;
-            /*printf("pop: %i->%i\n", lpq->cap, lpq->pop_idx);*/
         }
         if(!lpq->sz){
             /*not returning NULL*/
@@ -163,11 +162,9 @@ struct pmi_entry* pop_lpi_q(struct locking_pmi_q* lpq){
         ret = lpq->entries[lpq->pop_idx];
         // stuck in cont loop here
         if(!ret){
-            /*printf("sz %i, pop idx %i\n", lpq->sz, lpq->pop_idx);*/
             continue;
         }
         lpq->entries[lpq->pop_idx++] = NULL;
-        /*printf("pop: %i->%i\n", lpq->pop_idx-1, lpq->pop_idx);*/
         pthread_cond_signal(&lpq->ins_ready);
         ++lpq->n_popped;
         --lpq->sz;
@@ -476,9 +473,7 @@ void* insert_pmap_th(void* vpmap){
     struct pmap* p = vpmap;
     // these are not zeroed, only wrbuf must be zeroed and this is done in insert_pmap()
     uint8_t* rdbuf = malloc(p->hdr.pmi.rwbuf_sz), * wrbuf = malloc(p->hdr.pmi.rwbuf_sz);
-    /*FILE* fp = fopen(p->fn, "rb+");*/
-    // need to use RDWR if duplicates
-    int fd = open(p->fn, O_WRONLY);
+    int fd = open(p->fn, p->hdr.pmi.duplicates_expected ? O_RDWR : O_WRONLY);
     _Atomic struct pmi_entry* ae;
     struct pmi_entry e;
     while(1){
@@ -522,7 +517,6 @@ void* insert_pmap_th(void* vpmap){
     */
     }
     close(fd);
-    /*fclose(fp);*/
     free(rdbuf);
     free(wrbuf);
     /*printf("%i insertions from thread x\n", insertions);*/
