@@ -37,13 +37,3 @@ int lookup(char*);
 
 ffibuilder.compile(verbose=True);
 #void init_pmap(pmap_t*, char* fn, int n_buckets, int n_threads, int elements_in_mem, _Bool duplicates_expected);
-
-from _phash import lib as phash
-print(phash.init(b"FOOFOO", 1000, 32, 50000, False))
-phash.build_hdr(b"asher");
-phash.build_hdr(b"eteri");
-phash.finalize_hdr();
-phash.insert(b"asher", 900)
-phash.insert(b"eteri", 141)
-phash.seal()
-print(phash.lookup_quick(b"FOOFOO", b"asher"))

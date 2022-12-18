@@ -26,6 +26,7 @@ void finalize_hdr(){
 void insert(char* key, int val){
     insert_pmap(&P, key, val);
 }
+
 void seal(){
     seal_pmap(&P);
 }
