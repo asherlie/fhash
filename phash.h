@@ -10,48 +10,6 @@ struct pmi_entry{
 };
 
 struct pmi_q{
-    /*
-     * can just be an array of size cap and we do:
-     * capacity will be set on initialization
-        // reset idx to 0 if at capacity
-        cas(ins_idx, cap, 0)
-        idx = atomic_increment(ins_idx)
-        BUT what do we do if it's full and we can't insert?
-
-        xx = atomic_load(ins_idx)
-        if(xx == cap)
-    */
-#if !1
-ok maybe increment first
-if idx is too large, cond_wait until we have not only popped but done a full insertion
-
-//idx = atomic_increment(ins_idx)
-idx = atoic_load(ins_idx)
-if(idx == cap){
-    cond_wait() // this will be alerted once an insertion has completed
-}
-cas(ins_idx, cap) // reset to idx 0 if we can
-idx = atomic_increment()
-// hmm, this might be really cool - keep searching for a NULL entry continuously
-// once one is found we can instantly insert
-// might even negate the need for cond_wait() if we can just iterate using atomic_increment/cas() to set
-// in a while loop for each insertino
-// this should be my first implementation
-// entries will be popped using a separate pop_idx
-cas(buf[ins_idx], 0, new_val)
-
-we can then pop using:
-    to_pop = atomic_load()
-    cas(q[pop_idx], to_pop, NULL)
-
-
-
-this gets complicated though when considering the necessity of keeping not yet popped entries intact
-there may be an entry in idx 0 that we could overwrite
-
-because of this we should just use a mutex lock here
-we are going to need to use locks anyway due to cond_wait acquiring one
-#endif
     _Atomic int ins_idx, pop_idx;
     // pop target is set to the total number of entries that will be inserted
     // this will be known because insertion is only done on a second pass of the data
@@ -68,7 +26,7 @@ we are going to need to use locks anyway due to cond_wait acquiring one
 };
 
 struct locking_pmi_q{
-    /*_Atomic*/ struct pmi_entry** entries;
+    struct pmi_entry** entries;
     int cap, sz, pop_idx, ins_idx;
     int n_popped, pop_target;
     pthread_mutex_t lock;
@@ -111,7 +69,7 @@ struct pmap_hdr{
 };
 
 /*
- * IMPORTANT: i should use #defines to make this modular, look into xandr code
+ * IMPORTANT: i should use #defines to make this modular
  * user must define a (packed?) struct
  * or maybe they can just pass in a struct and its size
  *
