@@ -2,6 +2,8 @@
 #include <stdint.h>
 #include <pthread.h>
 
+static const _Bool locking = 0;
+
 /* this is the same as pmi_entry... remove one */
 /* TODO: separate out pmi_q code/defs */
 struct pmi_entry{
@@ -66,7 +68,7 @@ struct pmap_entry{
 	int val;
 };
 
-/* get rid of FILE* */
+/* TODO: get rid of FILE* */
 struct pmap{
 	_Bool insert_ready;
 	char fn[50];
@@ -75,12 +77,11 @@ struct pmap{
 };
 
 void init_pmap(struct pmap* p, char* fn, int n_buckets, int n_threads, int elements_in_mem, _Bool duplicates_expected);
-void init_pmap_hdr(struct pmap* p, int n_buckets, int n_threads, int pq_cap, _Bool duplicates_expected);
 void build_pmap_hdr(struct pmap* p, char* key);
 void finalize_pmap_hdr(struct pmap* p);
-struct timespec cleanup_pmi(struct pmap* p);
-
-/* client */
 void insert_pmap(struct pmap* p, char* key, int val);
+struct timespec seal_pmap(struct pmap* p);
+
 void load_pmap(struct pmap* p, char* fn);
 int lookup_pmap(const struct pmap* p, char* key);
+int partial_load_lookup_pmap(FILE* fp, char* key);
