@@ -1,6 +1,7 @@
 from _phash import lib as lphash
+import sys
 
-class phash:
+class Phash:
     def __init__(self, fn, buckets=1024, threads=32, entries=50000, duplicates=False):
         self.fn = bytes(fn, 'utf-8')
         self.initialized = False
@@ -35,19 +36,24 @@ class phash:
     def lookup_quick(self, key):
         return lphash.lookup_quick(self.fn, bytes(key, 'utf-8'))
 
-ph = phash('storage')
-print(ph.lookup('zhi'))
-alph=['a', 'b', 'c', 'd', 'e', 'f', 'g', 'h', 'i', 'j', 'k', 'l', 'm', 'n', 'o', 'p', 'q', 'r', 's', 't', 'u', 'v', 'w', 'x', 'y', 'z']
-for x in range(2):
-    for i in alph:
-        for j in alph:
-            for k in alph:
-                # for l in alph:
-                    # for m in alph:
-                genstr = i+j+k
-                if x == 0:
-                    ph.build_header(genstr)
-                if x == 1:
-                    ph.insert(genstr, ord(i)-ord('a'))
+n = 0
+ph = Phash('storage')
+if len(sys.argv) > 1:
+    print(ph.lookup(sys.argv[1]))
+else:
+    alph=['a', 'b', 'c', 'd', 'e', 'f', 'g', 'h', 'i', 'j', 'k', 'l', 'm', 'n', 'o', 'p', 'q', 'r', 's', 't', 'u', 'v', 'w', 'x', 'y', 'z']
+    for x in range(2):
+        for i in alph:
+            for j in alph:
+                for k in alph:
+                    for l in alph:
+                        for m in alph:
+                            genstr = i+j+k+l+m
+                            if x == 0:
+                                ph.build_header(genstr)
+                            if x == 1:
+                                n += 1
+                                ph.insert(genstr, n)
 
-ph.seal()
+    ph.seal()
+    print(f'inserted {n} entries');
