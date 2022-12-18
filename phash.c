@@ -242,6 +242,11 @@ struct timespec cleanup_pmi(struct pmap* p){
     free(p->hdr.col_map);
 
     free(p->hdr.pmi.bucket_ins_idx);
+    
+    free(p->hdr.pmi.pq.entries);
+    free(p->hdr.pmi.lpq.entries);
+
+    free(p->hdr.pmi.pmi_q_pop_threads);
 
     return join_time;
 }
