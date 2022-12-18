@@ -1,3 +1,5 @@
+#include <fcntl.h>
+
 #include "phash.h"
 
 // TODO: test functions msut go in a separate test file
@@ -109,9 +111,8 @@ void lookup_test(char* fn, char* key, _Bool partial){
     int val;
 
     if(partial){
-        FILE* fp;
-        printf("val: %i\n", partial_load_lookup_pmap(fp = fopen(fn, "rb"), key));
-        fclose(fp);
+        int fd = open(fn, O_RDONLY);
+        printf("val: %i\n", partial_load_lookup_pmap(fd, key));
         return;
     }
     load_pmap(&p, fn);
