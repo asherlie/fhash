@@ -179,12 +179,6 @@ void spawn_pmi_q_pop_threads(struct pmap* p){
     }
 }
 
-void write_zeroes(FILE* fp, int nbytes){
-	int* z = calloc(nbytes, 1);
-	fwrite(z, nbytes, 1, fp);
-	free(z);
-}
-
 /* build the scaffolding that all k/v will fit into */
 /*
  * TODO: this can use a lot of improvement - it should optionally not
@@ -193,6 +187,7 @@ void write_zeroes(FILE* fp, int nbytes){
 */
 void finalize_pmap_hdr(struct pmap* p){
 	int cur_offset = sizeof(int)+(3*sizeof(int)*p->hdr.n_buckets);
+    uint8_t* zerobuf;
     /*
 	 * can i alloc in this loop? i'll need to alloc hdr first
 	 * then go back in the end with fseek() to overwrite bucket_offset
@@ -201,7 +196,17 @@ void finalize_pmap_hdr(struct pmap* p){
 		p->hdr.bucket_offset[i] = cur_offset;
 		/* number of items per idx * (reserved space per key + value int) */
 		cur_offset += (p->hdr.col_map[i]*(p->hdr.max_keylen_map[i]+sizeof(int)));
+        if(p->hdr.max_keylen_map[i] > p->hdr.pmi.rwbuf_sz){
+            p->hdr.pmi.rwbuf_sz = p->hdr.max_keylen_map[i];
+        }
 	}
+
+    /* add space needed for value - this will grow when we're storing more data
+     * rwbuf_sz = max_keylen+sizeof(values)
+     */
+    p->hdr.pmi.rwbuf_sz += sizeof(int);
+    zerobuf = calloc(p->hdr.pmi.rwbuf_sz, 1);
+
     /*
      * offset can be calculated during insertion pass, everything can be aside from max_keylen
      * which can be preset by the user
@@ -215,16 +220,10 @@ void finalize_pmap_hdr(struct pmap* p){
 
 	/* writing bucket array */
 	for(int i = 0; i < p->hdr.n_buckets; ++i){
-		write_zeroes(p->fp, p->hdr.col_map[i]*(p->hdr.max_keylen_map[i]+sizeof(int)));
+        fwrite(zerobuf, p->hdr.col_map[i]*(p->hdr.max_keylen_map[i]+sizeof(int)), 1, p->fp);
         if(debug)printf("wrote %li zeroes for idx %i\n", p->hdr.col_map[i]*(p->hdr.max_keylen_map[i]+sizeof(int)), i);
-        if(p->hdr.max_keylen_map[i] > p->hdr.pmi.rwbuf_sz){
-            p->hdr.pmi.rwbuf_sz = p->hdr.max_keylen_map[i];
-        }
 	}
-    /* add space needed for value - this will grow when we're storing more data
-     * rwbuf_sz = max_keylen+sizeof(values)
-     */
-    p->hdr.pmi.rwbuf_sz += sizeof(int);
+    free(zerobuf);
     fclose(p->fp);
     p->fp = fopen(p->fn, "rb+");
     spawn_pmi_q_pop_threads(p);
@@ -643,13 +642,13 @@ int main(int argc, char** argv){
                 for(char c = 'a'; c <= 'z'; ++c){
                     for(char d = 'a'; d <= 'z'; ++d){
                         for(char e = 'a'; e <= 'z'; ++e){
-                            for(char f = 'a'; f <= 'g'; ++f){
+                            /*for(char f = 'a'; f <= 'g'; ++f){*/
                                 str[0] = a;
                                 str[1] = b;
                                 str[2] = c;
                                 str[3] = d;
                                 str[4] = e;
-                                str[5] = f;
+                                /*str[5] = f;*/
 
                                 if(i == 0){
                                     build_pmap_hdr(&p, str);
@@ -661,7 +660,7 @@ int main(int argc, char** argv){
                                     }
                                     else insert_lpi_q(&p.hdr.pmi.lpq, str, a-'a');
                                 }
-                            }
+                            /*}*/
                         }
                     }
                 }
