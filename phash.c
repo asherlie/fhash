@@ -1,4 +1,3 @@
-/* TODO: replace all FILE*s */
 #include <stdlib.h>
 #include <stdint.h>
 #include <limits.h>
@@ -190,7 +189,7 @@ void spawn_pmi_q_pop_threads(struct pmap* p){
 void finalize_pmap_hdr(struct pmap* p){
     int cur_offset = sizeof(int)+(3*sizeof(int)*p->hdr.n_buckets);
     uint8_t* zerobuf;
-    int fd = open(p->fn, O_WRONLY | O_CREAT | O_TRUNC);
+    int fd = open(p->fn, O_WRONLY | O_CREAT | O_TRUNC, 0666);
     /*
 	 * can i alloc in this loop? i'll need to alloc hdr first
 	 * then go back in the end with fseek() to overwrite bucket_offset
