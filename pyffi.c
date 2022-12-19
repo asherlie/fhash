@@ -1,3 +1,6 @@
+#include <fcntl.h>
+#include <unistd.h>
+
 #include "phash.h"
 /*
  * i need a separate library that makes use of this and initializes structs in the background
@@ -40,6 +43,8 @@ int lookup(char* key){
 }
 
 int lookup_quick(char* fn, char* key){
-    FILE* fp = fopen(fn, "rb");
-    return partial_load_lookup_pmap(fp, key);
+    int fd = open(fn, O_RDONLY), ret;
+    ret = partial_load_lookup_pmap(fd, key);
+    close(fd);
+    return ret;
 }
