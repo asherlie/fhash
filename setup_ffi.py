@@ -30,10 +30,4 @@ void load(char*);
 int lookup(char*);
 """)
 
-# ffibuilder.cdef("""
-# typedef struct pmap pmap_t;
-# void init_pmap(pmap_t*, char* fn, int n_buckets, int n_threads, int elements_in_mem, _Bool duplicates_expected);
-# """)
-
 ffibuilder.compile(verbose=True);
-#void init_pmap(pmap_t*, char* fn, int n_buckets, int n_threads, int elements_in_mem, _Bool duplicates_expected);
