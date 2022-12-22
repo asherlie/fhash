@@ -1,24 +1,3 @@
-//OKAY, NOW TO MAKE THE INTERFACE SENSIBLE, STATICALLY LINK IT AS A LIBRARY, WRITE AN FFI FOR PYTHON
-//separate code out for pmi_q
-//remove/clean up comments!
-//-O3 makes behavior weird, investigate with
-//valgrind, fix bad reads/writes
-//
-//what's preventing the possibility of doing a single pass insertion?
-//  knowing when pop() should return due to number_popped == target
-//  knowing how much space per bucket to allocate by using col_map
-//  knowing max_keylen per bucket so we can reduce memory
-//  knowing offset to data
-//
-//  okay, only real one is max_keylen, which should optionally be provided by the user
-//  if not provided, first pass will be required to find the optimal length for each
-//  bucket
-//
-// col_map is another one actually, need to know how many collissions there will be, although we could
-// just assume a large number but this would take a huge amount of space
-// some insertion sets will suffer much more from a constant max_keylen
-//
-// roll together functions like i do in python, though it'll impact speed
 #include <stdio.h>
 #include <stdint.h>
 #include <pthread.h>
