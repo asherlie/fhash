@@ -1,5 +1,7 @@
 #include <fcntl.h>
 #include <unistd.h>
+#include <stdlib.h>
+#include <string.h>
 
 #include "phash.h"
 
@@ -107,9 +109,15 @@ void test_lpi_q(){
 }
 #endif
 
+struct test_struct{
+    int val;
+    char stree[5];
+};
+
 void lookup_test(char* fn, char* key, _Bool partial){
     struct pmap p;
-    int val;
+    void* ret;
+    struct test_struct* val;
 
     if(partial){
         int fd = open(fn, O_RDONLY);
@@ -118,27 +126,33 @@ void lookup_test(char* fn, char* key, _Bool partial){
         return;
     }
     load_pmap(&p, fn);
-    val = lookup_pmap(&p, key);
-    printf("VAL: %i\n", val);
+    ret = lookup_pmap(&p, key);
+    if(!ret){
+        puts("no match found");
+        return;
+    }
+    val = ret;
+    printf("stree: \"%s\", val: %i\n", val->stree, val->val);
 }
 
 int main(int argc, char** argv){
 	struct pmap p;
     char str[6] = {0};
+    struct test_struct* val;
     int n_str = 0;
     int attempts = 0;
     double elapsed;
     struct timespec st, fin;
 
     if(argc > 1){
-        lookup_test("PM", argv[1], 1);
+        lookup_test("fyle", argv[1], 0);
         return 0;
     }
 
     /* can't let thread count get too high while keeping capcity low or they compete over slots to pop from */
     /* TODO: these should be dynamically chosen using expected insertions and max_threads and memory */
     /* 3/4 threads seems good for this - at 9.7s for 11M */
-    init_pmap(&p, "PM", 10240, 5, 524288, 0);
+    init_pmap(&p, "fyle", 0, sizeof(struct test_struct), 1024, 5, 524288, 0);
     /* inserting (26^5)7 strings - ~83.1M takes 4m36s */
     for(int i = 0; i < 2; ++i){
         for(char a = 'a'; a <= 'z'; ++a){
@@ -155,12 +169,19 @@ int main(int argc, char** argv){
                                 /*str[5] = f;*/
 
                                 if(i == 0){
-                                    build_pmap_hdr(&p, str);
+                                    /* key is variable length, value is not */
+                                    build_pmap_hdr(&p, str, NULL);
                                 }
                                 else{
                                     ++n_str;
                                     if(!locking){
-                                        insert_pmap(&p, str, a-'a'+d-'a');
+                                        val = malloc(sizeof(struct test_struct));
+                                        memcpy(val->stree, str, 4);
+                                        val->val = a;
+                                        /**val = a-'a'+d-'a';*/
+                                        /**val = a;*/
+                                        /**val = n_str;*/
+                                        insert_pmap(&p, strdup(str), val);
                                     }
                                     /*else insert_lpi_q(&p.hdr.pmi.lpq, str, a-'a');*/
                                 }
