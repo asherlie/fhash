@@ -63,9 +63,10 @@ void init_lpi_q(struct locking_pmi_q* lpq, int cap){
     lpq->entries = calloc(sizeof(struct pmi_entry*), lpq->cap);
 }
 
-void insert_lpi_q(struct locking_pmi_q* lpq, char* key, int val){
+void insert_lpi_q(struct locking_pmi_q* lpq, void* key, void* val){
     struct pmi_entry* e = malloc(sizeof(struct pmi_entry));
-    e->key = strdup(key);
+    /*e->key = strdup(key);*/
+    e->key = key;
     e->val = val;
     pthread_mutex_lock(&lpq->lock);
     while(1){
@@ -138,8 +139,29 @@ void init_pmap_hdr(struct pmap* p, int n_buckets, int n_threads, int pq_cap, _Bo
 
 	p->hdr.n_buckets = n_buckets;
 	p->hdr.col_map = calloc(sizeof(int), n_buckets);
+    /* these two fields will always be allocated for now */
+    /*
+     * TODO: only allocate if size is variable - otherwise this will just be
+     * a list of identical integers of size n_buckets - huge waste of space
+    */
 	p->hdr.max_keylen_map = calloc(sizeof(int), n_buckets);
-	p->hdr.bucket_offset = calloc(sizeof(int), n_buckets);
+	p->hdr.max_vallen_map = calloc(sizeof(int), n_buckets);
+    // confirm this doesn't need to be zeroed
+	p->hdr.bucket_offset = malloc(sizeof(int)*n_buckets);
+
+    /* TODO: huge waste of time to set the buffer like this or at all
+     * when it only contains duplicates
+     * TODO: address this
+     */
+    // if at least one keylen is non-variable
+    if(!p->variable_keylen || !p->variable_vallen){
+        for(int i = 0; i < n_buckets; ++i){
+            if(!p->variable_keylen)
+                p->hdr.max_keylen_map[i] = p->keylen;
+            if(!p->variable_vallen)
+                p->hdr.max_vallen_map[i] = p->vallen;
+        }
+    }
 
     p->hdr.pmi.bucket_ins_idx = calloc(sizeof(int), n_buckets);
     /* this will be updated in finalize_pmap_hdr() */
@@ -153,20 +175,44 @@ void init_pmap_hdr(struct pmap* p, int n_buckets, int n_threads, int pq_cap, _Bo
 }
 
 /* TODO: elements_in_mem should be provided in terms of bytes */
-void init_pmap(struct pmap* p, char* fn, int n_buckets, int n_threads, int elements_in_mem, _Bool duplicates_expected){
-	init_pmap_hdr(p, n_buckets, n_threads, elements_in_mem, duplicates_expected);
+void init_pmap(struct pmap* p, char* fn, size_t keylen, size_t vallen, int n_buckets, int n_threads,
+               int elements_in_mem, _Bool duplicates_expected){
+    p->keylen = keylen;
+    p->vallen = vallen;
+    p->variable_keylen = !(_Bool)keylen;
+    p->variable_vallen = !(_Bool)vallen;
 	strncpy(p->fn, fn, sizeof(p->fn)-1);
+
+	init_pmap_hdr(p, n_buckets, n_threads, elements_in_mem, duplicates_expected);
+    /* keylen of 0 is variable length string */
+    /*
+     * hmm, we need to accommodate variable length keys and values - what if each is a string?
+     * if neither are variable we don't need any max_keylen/max_vallen buffers allocated
+     * vallen will be added as a lookup for value length per bucket
+     * it'll be allocated to the max per bucket just like with keylen
+    */
+
 	p->insert_ready = 0;
 }
 
-void build_pmap_hdr(struct pmap* p, char* key){
+void build_pmap_hdr(struct pmap* p, void* key, void* val){
 	int idx = hash(key, p->hdr.n_buckets);
-	int keylen = strlen(key);
+    int keylen, vallen;
+
 	++p->hdr.col_map[idx];
     ++p->hdr.pmi.pq.pop_target;
     ++p->hdr.pmi.lpq.pop_target;
-	if(keylen > p->hdr.max_keylen_map[idx])
-		p->hdr.max_keylen_map[idx] = keylen;
+    /* otherwise this has been filled with keylen */
+    if(p->variable_keylen){
+        keylen = strlen((char*)key);
+        if(keylen > p->hdr.max_keylen_map[idx])
+            p->hdr.max_keylen_map[idx] = keylen;
+    }
+    if(p->variable_vallen){
+        vallen = strlen((char*)val);
+        if(vallen > p->hdr.max_vallen_map[idx])
+            p->hdr.max_keylen_map[idx] = vallen;
+    }
     if(p->hdr.col_map[idx] > p->hdr.pmi.max_bucket_len)
         p->hdr.pmi.max_bucket_len = p->hdr.col_map[idx];
 }
@@ -186,27 +232,44 @@ void spawn_pmi_q_pop_threads(struct pmap* p){
  * be necessary, and loops should be rolled together and fixed with
  * seek/write after
 */
+/* TODO: should headers - other than offset - be approximations?
+ * in practice it'll be difficult to guarantee that data stays
+ * consistent between iterations
+ * we can add some wiggle room to col_map and max_keylen
+ * allocate 10% extra entries in each collision list and 10% extra
+ * capacity in case of large keys
+ * TODO: need to write code to let key/value be anything - int64_t/struct
+ * anything should be able to be key/value
+ *
+ * to achieve this i should maybe use #deines with ##vars to create functions
+ * NAME##
+ * of abstract strongly typed structs
+ * i can then just make writes use sizeof(struct) for key/value - it'll be able to be
+ * set to existing types as well
+ * it will maybe create a new thing called phash_## - phash_int_int, phash_ashstruct_int
+ *
+ * the other option is to just pass in structs 
+ */
 void finalize_pmap_hdr(struct pmap* p){
-    int cur_offset = sizeof(int)+(3*sizeof(int)*p->hdr.n_buckets);
+    int cur_offset = sizeof(int)+(4*sizeof(int)*p->hdr.n_buckets);
+    int tmpsum;
     uint8_t* zerobuf;
     int fd = open(p->fn, O_WRONLY | O_CREAT | O_TRUNC, 0666);
     /*
 	 * can i alloc in this loop? i'll need to alloc hdr first
 	 * then go back in the end with fseek() to overwrite bucket_offset
     */
+    /* TODO: i can probably be more clever about max val/key len */
 	for(int i = 0; i < p->hdr.n_buckets; ++i){
 		p->hdr.bucket_offset[i] = cur_offset;
 		/* number of items per idx * (reserved space per key + value int) */
-		cur_offset += (p->hdr.col_map[i]*(p->hdr.max_keylen_map[i]+sizeof(int)));
-        if(p->hdr.max_keylen_map[i] > p->hdr.pmi.rwbuf_sz){
-            p->hdr.pmi.rwbuf_sz = p->hdr.max_keylen_map[i];
+		/*cur_offset += (p->hdr.col_map[i]*(p->hdr.max_keylen_map[i]+sizeof(int)));*/
+		cur_offset += (p->hdr.col_map[i]*(p->hdr.max_keylen_map[i]+p->hdr.max_vallen_map[i]));
+        /*if(p->hdr.max_keylen_map[i] > p->hdr.pmi.rwbuf_sz){*/
+        if((tmpsum = (p->hdr.max_keylen_map[i] + p->hdr.max_vallen_map[i])) > p->hdr.pmi.rwbuf_sz){
+            p->hdr.pmi.rwbuf_sz = tmpsum;
         }
 	}
-
-    /* add space needed for value - this will grow when we're storing more data
-     * rwbuf_sz = max_keylen+sizeof(values)
-     */
-    p->hdr.pmi.rwbuf_sz += sizeof(int);
 
     zerobuf = calloc(p->hdr.pmi.rwbuf_sz, p->hdr.pmi.max_bucket_len);
 
@@ -219,6 +282,7 @@ void finalize_pmap_hdr(struct pmap* p){
 	write(fd, &p->hdr.n_buckets, sizeof(int));
 	write(fd, p->hdr.col_map, sizeof(int) * p->hdr.n_buckets);
 	write(fd, p->hdr.max_keylen_map, sizeof(int) * p->hdr.n_buckets);
+	write(fd, p->hdr.max_vallen_map, sizeof(int) * p->hdr.n_buckets);
 	write(fd, p->hdr.bucket_offset, sizeof(int) * p->hdr.n_buckets);
 
 	/* writing bucket array */
@@ -226,7 +290,7 @@ void finalize_pmap_hdr(struct pmap* p){
         /* n_buckets can be set very high without much negative impact because if zero elements end 
          * up in a given bucket, the bucket will only take up 4 bytes of disk space
          */
-        write(fd, zerobuf, p->hdr.col_map[i]*(p->hdr.max_keylen_map[i]+sizeof(int)));
+        write(fd, zerobuf, p->hdr.col_map[i]*(p->hdr.max_keylen_map[i]+p->hdr.max_vallen_map[i]));
         if(debug)printf("wrote %li zeroes for idx %i\n", p->hdr.col_map[i]*(p->hdr.max_keylen_map[i]+sizeof(int)), i);
 	}
     free(zerobuf);
@@ -269,10 +333,11 @@ _Bool mempty(uint8_t* buf, int len){
 }
 
 /* returns attempts needed for an insertion */
-int insert_pmi_q(struct pmi_q* pq, char* key, int val){
+int insert_pmi_q(struct pmi_q* pq, char* key, void* val){
     int idx, capacity, attempts = 0;
     _Atomic struct pmi_entry* ne, * e = malloc(sizeof(struct pmi_entry));
-    _Atomic struct pmi_entry tmp_e = {.key = strdup(key), .val = val};
+    // TODO: from now on, this must be called with a key/val on the heap
+    _Atomic struct pmi_entry tmp_e = {.key = key, .val = val};
     atomic_store(e, tmp_e);
     while(1){
         ++attempts;
@@ -350,7 +415,8 @@ _Atomic struct pmi_entry* pop_pmi_q(struct pmi_q* pq){
     return ret;
 }
 
-void insert_pmap(struct pmap* p, char* key, int val){
+// TODO: key/val must be allocated on the heap
+void insert_pmap(struct pmap* p, void* key, void* val){
     insert_pmi_q(&p->hdr.pmi.pq, key, val);
 }
 
@@ -358,19 +424,28 @@ void insert_pmap(struct pmap* p, char* key, int val){
  * p->fp is no longer used in insert_pmap but can't be removed because it's still used in reading
  * operations - load/lookup() and in building the map hdr
 */
-void insert_pmap_internal(struct pmap* p, char* key, int val, uint8_t* rdbuf, uint8_t* wrbuf, int fd){
+void insert_pmap_internal(struct pmap* p, void* key, void* val, uint8_t* rdbuf, uint8_t* wrbuf, int fd){
 	int idx = hash(key, p->hdr.n_buckets), ins_idx;
-	int kv_sz = p->hdr.max_keylen_map[idx]+sizeof(int);
+	int kv_sz = p->hdr.max_keylen_map[idx]+p->hdr.max_vallen_map[idx];
 	int cur_offset;
-    int slen;
+    int klen, vlen;
     long int br;
     int dupes = 0;
-    slen = strnlen(key, p->hdr.max_keylen_map[idx]);
+    if(p->variable_keylen)
+        klen = strnlen((char*)key, p->hdr.max_keylen_map[idx]);
+    // TODO: now that we're doing this, keylen_map can be left empty if non-variable
+    else klen = p->keylen;
+    if(p->variable_vallen)
+        vlen = strnlen((char*)val, p->hdr.max_vallen_map[idx]);
+    else vlen = p->vallen;
+
     /* zero the section of wrbuf we'll be using */
-    memset(wrbuf+slen, 0, p->hdr.max_keylen_map[idx]-slen);
-    memcpy(wrbuf, key, slen);
+    memset(wrbuf+klen, 0, p->hdr.max_keylen_map[idx]-klen);
+    memcpy(wrbuf, key, klen);
     free(key);
-	memcpy(wrbuf+p->hdr.max_keylen_map[idx], &val, sizeof(int));
+    memset(wrbuf+p->hdr.max_keylen_map[idx]+vlen, 0, p->hdr.max_vallen_map[idx]-vlen);
+	memcpy(wrbuf+p->hdr.max_keylen_map[idx], val, vlen);
+    free(val);
 	cur_offset = p->hdr.bucket_offset[idx];
     /*
      * can i organize the data in such a way that it's easier to compare strings?
@@ -465,34 +540,41 @@ void load_pmap(struct pmap* p, char* fn){
     read(fd, &p->hdr.n_buckets, sizeof(int));
     p->hdr.col_map = malloc(sizeof(int)*p->hdr.n_buckets);
     p->hdr.max_keylen_map = malloc(sizeof(int)*p->hdr.n_buckets);
+    p->hdr.max_vallen_map = malloc(sizeof(int)*p->hdr.n_buckets);
     p->hdr.bucket_offset = malloc(sizeof(int)*p->hdr.n_buckets);
 
     read(fd, p->hdr.col_map, sizeof(int) * p->hdr.n_buckets);
     read(fd, p->hdr.max_keylen_map, sizeof(int) * p->hdr.n_buckets);
+    read(fd, p->hdr.max_vallen_map, sizeof(int) * p->hdr.n_buckets);
     read(fd, p->hdr.bucket_offset, sizeof(int) * p->hdr.n_buckets);
 
     close(fd);
 }
 
-int lookup_pmap(const struct pmap* p, char* key){
+void* lookup_pmap(const struct pmap* p, void* key){
     int idx = hash(key, p->hdr.n_buckets);
     int fd = open(p->fn, O_RDONLY);
-    int kv_sz = sizeof(int)+p->hdr.max_keylen_map[idx];
+    int kv_sz = p->hdr.max_vallen_map[idx]+p->hdr.max_keylen_map[idx];
     char* rdbuf = malloc(kv_sz);
     lseek(fd, p->hdr.bucket_offset[idx], SEEK_SET);
 
 	for(int i = 0; i < p->hdr.col_map[idx]; ++i){
+        /*we're reading 0 bytes*/
         read(fd, rdbuf, kv_sz);
-        if(!strncmp(rdbuf, key, p->hdr.max_keylen_map[idx])){
-            return *((int*)(rdbuf+p->hdr.max_keylen_map[idx]));
+        // max_keylen_map[idx] will be exactly correct unless p->variable_keylen
+        // TODO: use strncpy() for variable len
+        // TODO: add a field that's written to header for variable len
+        if(!memcmp(rdbuf, key, p->hdr.max_keylen_map[idx])){
+            return rdbuf+p->hdr.max_keylen_map[idx];
         }
     }
     close(fd);
-    return -1;
+    return NULL;
 }
 
 /* this can be run without load_pmap() */
 /* TODO: partial loads should incrementally build headers */
+// TODO: convert to new vallen
 int partial_load_lookup_pmap(int fd, char* key){
     int n_buckets, idx, bucket_width, max_keylen, offset, tmpval;
     int kv_sz;

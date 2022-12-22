@@ -1,3 +1,24 @@
+//OKAY, NOW TO MAKE THE INTERFACE SENSIBLE, STATICALLY LINK IT AS A LIBRARY, WRITE AN FFI FOR PYTHON
+//separate code out for pmi_q
+//remove/clean up comments!
+//-O3 makes behavior weird, investigate with
+//valgrind, fix bad reads/writes
+//
+//what's preventing the possibility of doing a single pass insertion?
+//  knowing when pop() should return due to number_popped == target
+//  knowing how much space per bucket to allocate by using col_map
+//  knowing max_keylen per bucket so we can reduce memory
+//  knowing offset to data
+//
+//  okay, only real one is max_keylen, which should optionally be provided by the user
+//  if not provided, first pass will be required to find the optimal length for each
+//  bucket
+//
+// col_map is another one actually, need to know how many collissions there will be, although we could
+// just assume a large number but this would take a huge amount of space
+// some insertion sets will suffer much more from a constant max_keylen
+//
+// roll together functions like i do in python, though it'll impact speed
 #include <stdio.h>
 #include <stdint.h>
 #include <pthread.h>
@@ -7,8 +28,8 @@ static const _Bool locking = 0;
 /* this is the same as pmi_entry... remove one */
 /* TODO: separate out pmi_q code/defs */
 struct pmi_entry{
-    char* key;
-    int val;
+    void* key;
+    void* val;
 };
 
 struct pmi_q{
@@ -45,13 +66,21 @@ struct pmap_insertion{
     pthread_t* pmi_q_pop_threads;
 };
 
+/*
+ * TODO: allocate/write max_vallen_map
+ * max vallen and keylen should both be set to [keylen/vallen]*n_buckets python style
+*/
 struct pmap_hdr{
 	int entries, n_buckets;
     /*
 	 * max_keylen_map is used to keep track of the longest key length in a given bucket
 	 * this is so that we don't need to take up memory to store long keys for buckets without any
+     * TODO: get rid of max_*len_map - if a user wants variable length strings they can just
+     * use max string length
+     * i can keep it around for now but it may get overly complex having the option of variable
+     * length
     */
-	int* col_map, * max_keylen_map, * bucket_offset;
+	int* col_map, * max_keylen_map, * max_vallen_map, * bucket_offset;
     /* stored in a diff struct because this is never written to phash file */
     struct pmap_insertion pmi;
 };
@@ -72,15 +101,81 @@ struct pmap{
 	_Bool insert_ready;
 	char fn[50];
 	struct pmap_hdr hdr;
+    // TODO: fields below should be moved to pmi because they're not loaded
+    size_t keylen, vallen;
+    /* redundant but convenient - the above will be set to 0 if variable */
+    _Bool variable_keylen, variable_vallen;
 };
 
+// do i need to use stringification?##
+// okay, should this define an inline function?
+// i need to generate code that initializes a pmap of a given type
+// info should somehow be stored about the type
+// insertions should know how many bytes are contained in k/v
+//
+// maybe pmap_entry should be redefined based on this
+// maybe it'll create a new struct of struct .... that leads to a pmap
+//
+// need an init function that will create a phash struct that contains
+// an underlying pmap as well as the sizeof the type
+//
+// it also must define a set of functions that lookup/insert
+// lookup will return the type
+//
+// how will init_pmap() take in this new type?
+// should this overwrite pmi_entry/pmap_entry?
+//
+// these should be passed a name to set along with key and value
+//
+// insert/init/lookup/build - all function will be updated to take in sizeof(key/value)
+// and replaced with *_internal()
+// macros will define actual implementations using sizeof(KEYTYPE/VALTYPE)
+//
+// user will use init_pmap_intlong
+//
+// first step is to make init,build_hdr,insert,lookup functions take in key/value bytelen
+// alternatively, init() can just take in size of each and store it for use in other functions
+//
+// no need to write to a file, as reader/writers will both have these macros being set
+// the programmer will create the high level functions needed with these calls
+// that will implicitly set up the sizeof(fields)
+//
+// hmm, can i just guarantee that a macro will be called before anything else and require
+// a new pmap_entry_##NAME to be defined and passed into everything
+// eh i think not actually, i'll just use void*s and bytelen variables
+// doesn't matter so much, especially if we get rid of risk by not exposing the programmer to this
+// by abstracting it away with the preprocessor
+
+#define def_pmap(NAME, KEYTYPE, VALTYPE) \
+/*struct pmap_##KEYTYPE_##VALTYPE{*/ \
+/* struct pmap_##NAME{*/ \
+/*struct pmap_##KEYTYPE_##VALTYPE{*/ \
+struct pmap_##NAME{\
+struct pmap* p; \
+}; \
+\
+struct pmi_entry_##NAME{ \
+KEYTYPE key; \
+VALTYPE val; \
+};\
+                                    \
+inline VALTYPE lookup_pmap_##NAME(){  \
+return 2; \
+} 
+
+def_pmap(int_long, int, long)
+
+
+// these will mostly be removed from this header in favor of just the macro and the inline functions they define
 /* TODO: potentially roll together init/build, insert/finalize - they can check if(_) and run operations */
-void init_pmap(struct pmap* p, char* fn, int n_buckets, int n_threads, int elements_in_mem, _Bool duplicates_expected);
-void build_pmap_hdr(struct pmap* p, char* key);
+/* NOTE: pmaps are only meant to be used with variable key/val len when using strings */
+void init_pmap(struct pmap* p, char* fn, size_t keylen, size_t vallen, int n_buckets, int n_threads,
+               int elements_in_mem, _Bool duplicates_expected);
+void build_pmap_hdr(struct pmap* p, void* key, void* val);
 void finalize_pmap_hdr(struct pmap* p);
-void insert_pmap(struct pmap* p, char* key, int val);
+void insert_pmap(struct pmap* p, void* key, void* val);
 struct timespec seal_pmap(struct pmap* p);
 
 void load_pmap(struct pmap* p, char* fn);
-int lookup_pmap(const struct pmap* p, char* key);
+void* lookup_pmap(const struct pmap* p, void* key);
 int partial_load_lookup_pmap(int fd, char* key);
