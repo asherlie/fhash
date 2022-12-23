@@ -41,6 +41,9 @@ struct pmap_insertion{
     _Atomic int n_entries;
     int rwbuf_sz, max_bucket_len;
     struct pmi_q pq;
+
+    int (*hash_func)(void*, int);
+    /* TODO: remove locking related fields */
     struct locking_pmi_q lpq;
     pthread_t* pmi_q_pop_threads;
 };
@@ -148,13 +151,13 @@ def_pmap(int_long, int, long)
 // these will mostly be removed from this header in favor of just the macro and the inline functions they define
 /* TODO: potentially roll together init/build, insert/finalize - they can check if(_) and run operations */
 /* NOTE: pmaps are only meant to be used with variable key/val len when using strings */
-void init_pmap(struct pmap* p, char* fn, size_t keylen, size_t vallen, int n_buckets, int n_threads,
-               int elements_in_mem, _Bool duplicates_expected);
+void init_pmap(struct pmap* p, char* fn, int (*hash_func)(void*, int), size_t keylen, size_t vallen, 
+               int n_buckets, int n_threads, int elements_in_mem, _Bool duplicates_expected);
 void build_pmap_hdr(struct pmap* p, void* key, void* val);
 void finalize_pmap_hdr(struct pmap* p);
 void insert_pmap(struct pmap* p, void* key, void* val);
 struct timespec seal_pmap(struct pmap* p);
 
 void load_pmap(struct pmap* p, char* fn);
-void* lookup_pmap(const struct pmap* p, void* key);
+void* lookup_pmap(const struct pmap* p, void* key, int (*hash_func)(void*, int));
 int partial_load_lookup_pmap(int fd, char* key);

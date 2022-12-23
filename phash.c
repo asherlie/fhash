@@ -15,13 +15,18 @@ void* insert_pmap_th(void* vpmap);
 /* a great way to keep size of file down with varying keylengths would be to have 
  * a bucket that very large keys go into
  */
-int hash(char* key, int n_buckets){
-	int idx = 0;
-	for(char* i = key; *i; ++i){
-		idx += (*i*(i-key+1));
-	}
-	return idx % n_buckets;
-}
+// needs to be updated!!! maybe user should have to specify hashing function with macros
+/*
+ * int hash(char* key, int n_buckets){
+ *     return 0;
+ *     return *key % n_buckets;
+ *     int idx = 0;
+ *     for(char* i = key; *i; ++i){
+ *         idx += (*i*(i-key+1));
+ *     }
+ *     return idx % n_buckets;
+ * }
+*/
 
 /*
  * 11.88M insertions in 57.202s,2m28.329s,59.408s in 20 threads with queue capacity of 1000
@@ -131,7 +136,7 @@ struct pmi_entry* pop_lpi_q(struct locking_pmi_q* lpq){
  * define max_threads and use sweet spot above, 1:1500
  * TODO: if n_threads <= 0, auto calc using 1:1500
 */
-void init_pmap_hdr(struct pmap* p, int n_buckets, int n_threads, int pq_cap, _Bool duplicates_expected){
+void init_pmap_hdr(struct pmap* p, int (*hash_func)(void*, int), int n_buckets, int n_threads, int pq_cap, _Bool duplicates_expected){
     int adjusted_n_threads;
 
     if(duplicates_expected)adjusted_n_threads = 1;
@@ -172,18 +177,19 @@ void init_pmap_hdr(struct pmap* p, int n_buckets, int n_threads, int pq_cap, _Bo
     p->hdr.pmi.max_bucket_len = 0;
     p->hdr.pmi.duplicates_expected = duplicates_expected;
     p->hdr.pmi.n_threads = adjusted_n_threads;
+    p->hdr.pmi.hash_func = hash_func;
 }
 
 /* TODO: elements_in_mem should be provided in terms of bytes */
-void init_pmap(struct pmap* p, char* fn, size_t keylen, size_t vallen, int n_buckets, int n_threads,
-               int elements_in_mem, _Bool duplicates_expected){
+void init_pmap(struct pmap* p, char* fn, int (*hash_func)(void*, int), size_t keylen, size_t vallen, 
+               int n_buckets, int n_threads, int elements_in_mem, _Bool duplicates_expected){
     p->keylen = keylen;
     p->vallen = vallen;
     p->variable_keylen = !(_Bool)keylen;
     p->variable_vallen = !(_Bool)vallen;
 	strncpy(p->fn, fn, sizeof(p->fn)-1);
 
-	init_pmap_hdr(p, n_buckets, n_threads, elements_in_mem, duplicates_expected);
+	init_pmap_hdr(p, hash_func, n_buckets, n_threads, elements_in_mem, duplicates_expected);
     /* keylen of 0 is variable length string */
     /*
      * hmm, we need to accommodate variable length keys and values - what if each is a string?
@@ -195,8 +201,9 @@ void init_pmap(struct pmap* p, char* fn, size_t keylen, size_t vallen, int n_buc
 	p->insert_ready = 0;
 }
 
+/* TODO: require sizeof(val), not val itself - will be more clear */
 void build_pmap_hdr(struct pmap* p, void* key, void* val){
-	int idx = hash(key, p->hdr.n_buckets);
+	int idx = p->hdr.pmi.hash_func(key, p->hdr.n_buckets);
     int keylen, vallen;
 
 	++p->hdr.col_map[idx];
@@ -425,7 +432,7 @@ void insert_pmap(struct pmap* p, void* key, void* val){
  * operations - load/lookup() and in building the map hdr
 */
 void insert_pmap_internal(struct pmap* p, void* key, void* val, uint8_t* rdbuf, uint8_t* wrbuf, int fd){
-	int idx = hash(key, p->hdr.n_buckets), ins_idx;
+	int idx = p->hdr.pmi.hash_func(key, p->hdr.n_buckets), ins_idx;
 	int kv_sz = p->hdr.max_keylen_map[idx]+p->hdr.max_vallen_map[idx];
 	int cur_offset;
     int klen, vlen;
@@ -551,8 +558,8 @@ void load_pmap(struct pmap* p, char* fn){
     close(fd);
 }
 
-void* lookup_pmap(const struct pmap* p, void* key){
-    int idx = hash(key, p->hdr.n_buckets);
+void* lookup_pmap(const struct pmap* p, void* key, int (*hash_func)(void*, int)){
+    int idx = hash_func(key, p->hdr.n_buckets);
     int fd = open(p->fn, O_RDONLY);
     int kv_sz = p->hdr.max_vallen_map[idx]+p->hdr.max_keylen_map[idx];
     char* rdbuf = malloc(kv_sz);
@@ -580,7 +587,7 @@ int partial_load_lookup_pmap(int fd, char* key){
     int kv_sz;
     char* rdbuf;
     read(fd, &n_buckets, sizeof(int));
-    idx = hash(key, n_buckets);
+    idx = 1;//hash(key, n_buckets);
     /* seek to col_map[idx] */
     lseek(fd, (1+idx)*sizeof(int), SEEK_SET);
     read(fd, &bucket_width, sizeof(int));
