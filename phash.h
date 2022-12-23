@@ -191,6 +191,13 @@ static inline void insert_##NAME(NAME* map, KEYTYPE* key, VALTYPE* val){        
                                                                                              \
 static inline void seal_##NAME(NAME* map){                                                   \
     seal_pmap(map->p);                                                                       \
+}                                                                                            \
+                                                                                             \
+static inline NAME* load_##NAME(char* fn){ \
+    NAME* r = malloc(sizeof(NAME)); \
+    r->p = malloc(sizeof(struct pmap)); \
+    load_pmap(r->p, fn); \
+    return r; \
 }
 
 define_pmap(beeper, int, int, NULL)
