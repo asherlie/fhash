@@ -129,27 +129,6 @@ struct pmap{
 // doesn't matter so much, especially if we get rid of risk by not exposing the programmer to this
 // by abstracting it away with the preprocessor
 
-#define def_pmap(NAME, KEYTYPE, VALTYPE) \
-/*struct pmap_##KEYTYPE_##VALTYPE{*/ \
-/* struct pmap_##NAME{*/ \
-/*struct pmap_##KEYTYPE_##VALTYPE{*/ \
-struct pmap_##NAME{\
-struct pmap* p; \
-}; \
-\
-struct pmi_entry_##NAME{ \
-KEYTYPE key; \
-VALTYPE val; \
-};\
-                                    \
-inline VALTYPE lookup_pmap_##NAME(){  \
-return 2; \
-} 
-
-
-def_pmap(int_long, int, long)
-
-
 // these will mostly be removed from this header in favor of just the macro and the inline functions they define
 /* TODO: potentially roll together init/build, insert/finalize - they can check if(_) and run operations */
 /* NOTE: pmaps are only meant to be used with variable key/val len when using strings */
@@ -165,23 +144,26 @@ void* lookup_pmap(const struct pmap* p, void* key, int (*hash_func)(void*, int))
 int partial_load_lookup_pmap(int fd, char* key);
 
 // defines a shallow wrapper for struct pmap* to be returned by init()
+// we really need to be able to use variable length strings - or even static length
 #define define_pmap(NAME, KEYTYPE, VALTYPE, hash_func)                                       \
 typedef struct NAME{                                                                         \
-struct pmap* p;                                                                              \
+    struct pmap* p;                                                                          \
 }NAME;                                                                                       \
+                                                                                             \
 static inline NAME* init_##NAME(char* fn){                                                   \
     NAME* r = malloc(sizeof(NAME));                                                          \
     r->p = malloc(sizeof(struct pmap));                                                      \
     /* TODO: get variable length char* working */                                            \
+    /* to do this i'll need separate macros for string maps */                               \
     init_pmap(r->p, fn, hash_func, sizeof(KEYTYPE), sizeof(VALTYPE), 1024, 5, 524288, 0);    \
     return r;                                                                                \
 }                                                                                            \
                                                                                              \
-static inline void build_##NAME_hdr(NAME* map, KEYTYPE key, VALTYPE val){                    \
+static inline void build_##NAME##_hdr(NAME* map, KEYTYPE key, VALTYPE val){                  \
     build_pmap_hdr(map->p, (void*)&key, (void*)&val);                                        \
 }                                                                                            \
                                                                                              \
-static inline void finalize_##NAME_hdr(NAME* map){                                           \
+static inline void finalize_##NAME##_hdr(NAME* map){                                           \
     finalize_pmap_hdr(map->p);                                                               \
 }                                                                                            \
                                                                                              \
@@ -200,8 +182,25 @@ static inline NAME* load_##NAME(char* fn){                                      
     return r;                                                                                \
 }                                                                                            \
                                                                                              \
-static inline VALTYPE* lookup_##NAME(NAME* map, KEYTYPE key){                                \
-    return (VALTYPE*)lookup_pmap(map->p, (void*)&key, hash_func);                            \
+static inline VALTYPE* lookup_##NAME(NAME* map, KEYTYPE* key){                                \
+    return (VALTYPE*)lookup_pmap(map->p, (void*)key, hash_func);                            \
 }
 
-define_pmap(beeper, int, int, NULL)
+static inline int hash_int(void* key, int buckets){
+    return *(int*)key % buckets;
+}
+
+
+struct spotify_song{
+    uint32_t uid;
+    int danciness;
+    int key;
+    float tempo;
+    int volume;
+};
+
+struct spotify_uri{
+    char uri[32];
+};
+
+define_pmap(test_map, int, int, hash_int)
