@@ -141,6 +141,7 @@ struct timespec seal_pmap(struct pmap* p);
 
 void load_pmap(struct pmap* p, char* fn);
 void* lookup_pmap(const struct pmap* p, void* key, int (*hash_func)(void*, int));
+void** lookup_pmap_bucket(const struct pmap* p, void* key, int start_idx, int n, int (*hash_func)(void*, int));
 int partial_load_lookup_pmap(int fd, char* key);
 
 // defines a shallow wrapper for struct pmap* to be returned by init()
@@ -163,7 +164,7 @@ static inline void build_##NAME##_hdr(NAME* map, KEYTYPE key, VALTYPE val){     
     build_pmap_hdr(map->p, (void*)&key, (void*)&val);                                        \
 }                                                                                            \
                                                                                              \
-static inline void finalize_##NAME##_hdr(NAME* map){                                           \
+static inline void finalize_##NAME##_hdr(NAME* map){                                         \
     finalize_pmap_hdr(map->p);                                                               \
 }                                                                                            \
                                                                                              \
@@ -182,9 +183,14 @@ static inline NAME* load_##NAME(char* fn){                                      
     return r;                                                                                \
 }                                                                                            \
                                                                                              \
-static inline VALTYPE* lookup_##NAME(NAME* map, KEYTYPE* key){                                \
-    return (VALTYPE*)lookup_pmap(map->p, (void*)key, hash_func);                            \
-}
+static inline VALTYPE* lookup_##NAME(NAME* map, KEYTYPE* key){                               \
+    return (VALTYPE*)lookup_pmap(map->p, (void*)key, hash_func);                             \
+}                                                                                            \
+                                                                                             \
+static inline VALTYPE** lookup_##NAME##_bucket(NAME* map, KEYTYPE* key, int start, int n){   \
+    return (VALTYPE**)lookup_pmap_bucket(map->p, key, start, n, hash_func);                  \
+}                                                                                            \
+                                                                                             \
 
 static inline int hash_int(void* key, int buckets){
     return *(int*)key % buckets;
