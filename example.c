@@ -154,12 +154,7 @@ int kv_test(){
     int x;
     char fn[] = "kt";
     /*init_pmap(&p, "kt", sizeof(int), sizeof(struct test_struct), 1024, 5, 524288, 0);*/
-    // hmm, kinda working with specified string length!!
-    // variable length value not working perfectly (or at all)
-    // seg faulting somewhere, should be easy enough to track down
-    // use gdb with those extra symbols
-    // TODO: why is this seg faulting with variable stringlen?
-    init_pmap(&p, fn, hash, sizeof(int), 6, 1024, 5, 524288, 0);
+    init_pmap(&p, fn, hash, sizeof(int), 0, 1024, 5, 524288, 0);
     for(int i = 0; i < 10; ++i){
         // val must be specified if variable length
         build_pmap_hdr(&p, &i, "STRING");
@@ -179,7 +174,7 @@ int kv_test(){
 }
 
 int main(int argc, char** argv){
-    /*return kv_test();*/
+    return kv_test();
 	struct pmap p;
     char str[6] = {0};
     struct test_struct* val;

@@ -167,7 +167,6 @@ void init_pmap_hdr(struct pmap* p, int (*hash_func)(void*, int), int n_buckets, 
                 p->hdr.max_vallen_map[i] = p->vallen;
         }
     }
-
     p->hdr.pmi.bucket_ins_idx = calloc(sizeof(int), n_buckets);
     /* this will be updated in finalize_pmap_hdr() */
     init_pmi_q(&p->hdr.pmi.pq, pq_cap);
@@ -218,7 +217,7 @@ void build_pmap_hdr(struct pmap* p, void* key, void* val){
     if(p->variable_vallen){
         vallen = strlen((char*)val);
         if(vallen > p->hdr.max_vallen_map[idx])
-            p->hdr.max_keylen_map[idx] = vallen;
+            p->hdr.max_vallen_map[idx] = vallen;
     }
     if(p->hdr.col_map[idx] > p->hdr.pmi.max_bucket_len)
         p->hdr.pmi.max_bucket_len = p->hdr.col_map[idx];
@@ -571,6 +570,7 @@ void* lookup_pmap(const struct pmap* p, void* key, int (*hash_func)(void*, int))
         // max_keylen_map[idx] will be exactly correct unless p->variable_keylen
         // TODO: use strncpy() for variable len
         // TODO: add a field that's written to header for variable len
+
         if(!memcmp(rdbuf, key, p->hdr.max_keylen_map[idx])){
             return rdbuf+p->hdr.max_keylen_map[idx];
         }
