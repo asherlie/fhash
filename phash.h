@@ -193,11 +193,15 @@ static inline void seal_##NAME(NAME* map){                                      
     seal_pmap(map->p);                                                                       \
 }                                                                                            \
                                                                                              \
-static inline NAME* load_##NAME(char* fn){ \
-    NAME* r = malloc(sizeof(NAME)); \
-    r->p = malloc(sizeof(struct pmap)); \
-    load_pmap(r->p, fn); \
-    return r; \
+static inline NAME* load_##NAME(char* fn){                                                   \
+    NAME* r = malloc(sizeof(NAME));                                                          \
+    r->p = malloc(sizeof(struct pmap));                                                      \
+    load_pmap(r->p, fn);                                                                     \
+    return r;                                                                                \
+}                                                                                            \
+                                                                                             \
+static inline VALTYPE* lookup_##NAME(NAME* map, KEYTYPE key){                                \
+    return (VALTYPE*)lookup_pmap(map->p, (void*)&key, hash_func);                            \
 }
 
 define_pmap(beeper, int, int, NULL)
