@@ -165,16 +165,32 @@ void* lookup_pmap(const struct pmap* p, void* key, int (*hash_func)(void*, int))
 int partial_load_lookup_pmap(int fd, char* key);
 
 // defines a shallow wrapper for struct pmap* to be returned by init()
-#define define_pmap(NAME, KEYTYPE, VALTYPE, hash_func) \
-typedef struct NAME{ \
-struct pmap* p; \
-}NAME; \
-static inline NAME* init_##NAME(char* fn){ \
-    NAME* r = malloc(sizeof(NAME)); \
-    r->p = malloc(sizeof(struct pmap)); \
-    /* TODO: get variable length char* working */ \
-    init_pmap(r->p, fn, hash_func, sizeof(KEYTYPE), sizeof(VALTYPE), 1024, 5, 524288, 0); \
-    return r; \
+#define define_pmap(NAME, KEYTYPE, VALTYPE, hash_func)                                       \
+typedef struct NAME{                                                                         \
+struct pmap* p;                                                                              \
+}NAME;                                                                                       \
+static inline NAME* init_##NAME(char* fn){                                                   \
+    NAME* r = malloc(sizeof(NAME));                                                          \
+    r->p = malloc(sizeof(struct pmap));                                                      \
+    /* TODO: get variable length char* working */                                            \
+    init_pmap(r->p, fn, hash_func, sizeof(KEYTYPE), sizeof(VALTYPE), 1024, 5, 524288, 0);    \
+    return r;                                                                                \
+}                                                                                            \
+                                                                                             \
+static inline void build_##NAME_hdr(NAME* map, KEYTYPE key, VALTYPE val){                    \
+    build_pmap_hdr(map->p, (void*)&key, (void*)&val);                                        \
+}                                                                                            \
+                                                                                             \
+static inline void finalize_##NAME_hdr(NAME* map){                                           \
+    finalize_pmap_hdr(map->p);                                                               \
+}                                                                                            \
+                                                                                             \
+static inline void insert_##NAME(NAME* map, KEYTYPE* key, VALTYPE* val){                     \
+    insert_pmap(map->p, (void*)key, (void*)val);                                             \
+}                                                                                            \
+                                                                                             \
+static inline void seal_##NAME(NAME* map){                                                   \
+    seal_pmap(map->p);                                                                       \
 }
 
 define_pmap(beeper, int, int, NULL)
