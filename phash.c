@@ -5,6 +5,7 @@
 #include <string.h>
 #include <fcntl.h>
 #include <unistd.h>
+/*#include <sys/param.h>*/
 
 #include "phash.h"
 
@@ -575,11 +576,32 @@ void* lookup_pmap(const struct pmap* p, void* key, int (*hash_func)(void*, int))
         // TODO: add a field that's written to header for variable len
 
         if(!memcmp(rdbuf, key, p->hdr.max_keylen_map[idx])){
-            ret = rdbuf+p->hdr.max_keylen_map[idx];
+            ret = malloc(p->hdr.max_vallen_map[idx]);
+            memcpy(ret, rdbuf+p->hdr.max_keylen_map[idx], p->hdr.max_vallen_map[idx]);
             break;
         }
     }
     free(rdbuf);
+    close(fd);
+    return ret;
+}
+
+/* returns NULL terminated list of size <= n */
+/* we can assume the caller has enough memory to store n entries */
+void** lookup_pmap_bucket(const struct pmap* p, void* key, int start_idx, int n, int (*hash_func)(void*, int)){
+    int idx = hash_func(key, p->hdr.n_buckets);
+    int fd = open(p->fn, O_RDONLY);
+    int kv_sz = p->hdr.max_vallen_map[idx]+p->hdr.max_keylen_map[idx];
+    /*int to_read = kv_sz*MIN(n, p->hdr.col_map[idx]);*/
+    void** ret = calloc(sizeof(void*), n+1);
+
+    lseek(fd, p->hdr.bucket_offset[idx]+(kv_sz*start_idx), SEEK_SET);
+
+    for(int i = start_idx; i < p->hdr.col_map[idx]; ++i){
+        ret[i] = malloc(kv_sz);
+        read(fd, ret[i], kv_sz);
+    }
+
     close(fd);
     return ret;
 }
