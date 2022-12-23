@@ -114,7 +114,7 @@ struct test_struct{
     char stree[5];
 };
 
-int hash(void* key, int n_buckets){
+int hash_str(void* key, int n_buckets){
     int idx = 0;
     for(char* i = key; *i; ++i){
         idx += (*i*(i-(char*)key+1));
@@ -134,7 +134,7 @@ void lookup_test(char* fn, char* key, _Bool partial){
         return;
     }
     load_pmap(&p, fn);
-    ret = lookup_pmap(&p, key, hash);
+    ret = lookup_pmap(&p, key, hash_str);
     if(!ret){
         puts("no match found");
         return;
@@ -154,7 +154,7 @@ int kv_test(){
     int x;
     char fn[] = "kt";
     /*init_pmap(&p, "kt", sizeof(int), sizeof(struct test_struct), 1024, 5, 524288, 0);*/
-    init_pmap(&p, fn, hash, sizeof(int), 0, 1024, 5, 524288, 0);
+    init_pmap(&p, fn, hash_str, sizeof(int), 0, 1024, 5, 524288, 0);
     for(int i = 0; i < 10; ++i){
         // val must be specified if variable length
         build_pmap_hdr(&p, &i, "STRING");
@@ -168,12 +168,58 @@ int kv_test(){
     load_pmap(&p, fn);
     x = 3;
     /*key must be same exact length*/
-    puts((char*)lookup_pmap(&p, &x, hash));
+    puts((char*)lookup_pmap(&p, &x, hash_str));
 
     return 0;
 }
 
+/*
+ * int hash_int(void* key, int buckets){
+ *     return *(int*)key % buckets;
+ * }
+ * 
+*/
+void macro_test(){
+    int* k = malloc(4), * v = malloc(sizeof(4));
+    test_map* map = init_test_map("test_map"), * loaded;
+    build_test_map_hdr(map, 0, 59);
+    finalize_test_map_hdr(map);
+    *k = 0;
+    *v = 59;
+    insert_test_map(map, k, v);
+    seal_test_map(map);
+
+    loaded = load_test_map("test_map");
+    k = lookup_test_map(loaded, k);
+    printf("val: %i\n", *k);
+}
+
+void spotify_test(){
+    struct spotify_uri* uri = malloc(sizeof(struct spotify_uri));
+    struct spotify_song* s = malloc(sizeof(struct spotify_song)), * ls = malloc(sizeof(struct spotify_song));
+    s->danciness = 94;
+    s->tempo = .4;
+    s->key = 9;
+    s->volume = 10;
+    s->uid = 0;
+    strcpy(uri->uri, "abfaffkfbjskxskeeeieiiiffxxxx90");
+    memcpy(ls, s, sizeof(struct spotify_song));
+    spotify_map* m = init_spotify_map("spot");
+    build_spotify_map_hdr(m, *s, *uri);
+    finalize_spotify_map_hdr(m);
+    insert_spotify_map(m, s, uri);
+    seal_spotify_map(m);
+
+    spotify_map* lm = load_spotify_map("spot");
+    // header not being build properly
+    struct spotify_uri* lu  = lookup_spotify_map(lm, ls);
+    printf("uri: \"%s\"\n", lu->uri);
+}
+
 int main(int argc, char** argv){
+    spotify_test();
+    /*macro_test();*/
+    return 0;
     return kv_test();
 	struct pmap p;
     char str[6] = {0};
@@ -191,7 +237,7 @@ int main(int argc, char** argv){
     /* can't let thread count get too high while keeping capcity low or they compete over slots to pop from */
     /* TODO: these should be dynamically chosen using expected insertions and max_threads and memory */
     /* 3/4 threads seems good for this - at 9.7s for 11M */
-    init_pmap(&p, "fyle", hash, 0, sizeof(struct test_struct), 1024, 5, 524288, 0);
+    init_pmap(&p, "fyle", hash_str, 0, sizeof(struct test_struct), 1024, 5, 524288, 0);
     /* inserting (26^5)7 strings - ~83.1M takes 4m36s */
     for(int i = 0; i < 2; ++i){
         for(char a = 'a'; a <= 'z'; ++a){
