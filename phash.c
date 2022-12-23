@@ -305,6 +305,7 @@ void finalize_pmap_hdr(struct pmap* p){
 	p->insert_ready = 1;
 }
 
+/* TODO: properly free up memory - or don't - optionally keep hdr intact for lookups */
 /* frees memory and joins threads used for pmap insertion */
 struct timespec cleanup_pmi(struct pmap* p){
     struct timespec join_time;
@@ -315,6 +316,7 @@ struct timespec cleanup_pmi(struct pmap* p){
 
     free(p->hdr.bucket_offset);
     free(p->hdr.max_keylen_map);
+    free(p->hdr.max_vallen_map);
     free(p->hdr.col_map);
 
     free(p->hdr.pmi.bucket_ins_idx);
@@ -562,6 +564,7 @@ void* lookup_pmap(const struct pmap* p, void* key, int (*hash_func)(void*, int))
     int fd = open(p->fn, O_RDONLY);
     int kv_sz = p->hdr.max_vallen_map[idx]+p->hdr.max_keylen_map[idx];
     char* rdbuf = malloc(kv_sz);
+    void* ret = NULL;
     lseek(fd, p->hdr.bucket_offset[idx], SEEK_SET);
 
 	for(int i = 0; i < p->hdr.col_map[idx]; ++i){
@@ -572,11 +575,13 @@ void* lookup_pmap(const struct pmap* p, void* key, int (*hash_func)(void*, int))
         // TODO: add a field that's written to header for variable len
 
         if(!memcmp(rdbuf, key, p->hdr.max_keylen_map[idx])){
-            return rdbuf+p->hdr.max_keylen_map[idx];
+            ret = rdbuf+p->hdr.max_keylen_map[idx];
+            break;
         }
     }
+    free(rdbuf);
     close(fd);
-    return NULL;
+    return ret;
 }
 
 /* this can be run without load_pmap() */
