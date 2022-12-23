@@ -114,6 +114,14 @@ struct test_struct{
     char stree[5];
 };
 
+int hash(void* key, int n_buckets){
+    int idx = 0;
+    for(char* i = key; *i; ++i){
+        idx += (*i*(i-(char*)key+1));
+    }
+    return idx % n_buckets;
+}
+
 void lookup_test(char* fn, char* key, _Bool partial){
     struct pmap p;
     void* ret;
@@ -126,7 +134,7 @@ void lookup_test(char* fn, char* key, _Bool partial){
         return;
     }
     load_pmap(&p, fn);
-    ret = lookup_pmap(&p, key);
+    ret = lookup_pmap(&p, key, hash);
     if(!ret){
         puts("no match found");
         return;
@@ -135,7 +143,43 @@ void lookup_test(char* fn, char* key, _Bool partial){
     printf("stree: \"%s\", val: %i\n", val->stree, val->val);
 }
 
+int* get_heap_int(int x){
+    int* ret = malloc(sizeof(int));
+    *ret = x;
+    return ret;
+}
+
+int kv_test(){
+    struct pmap p;
+    int x;
+    char fn[] = "kt";
+    /*init_pmap(&p, "kt", sizeof(int), sizeof(struct test_struct), 1024, 5, 524288, 0);*/
+    // hmm, kinda working with specified string length!!
+    // variable length value not working perfectly (or at all)
+    // seg faulting somewhere, should be easy enough to track down
+    // use gdb with those extra symbols
+    // TODO: why is this seg faulting with variable stringlen?
+    init_pmap(&p, fn, hash, sizeof(int), 6, 1024, 5, 524288, 0);
+    for(int i = 0; i < 10; ++i){
+        // val must be specified if variable length
+        build_pmap_hdr(&p, &i, "STRING");
+    }
+    finalize_pmap_hdr(&p);
+    for(int i = 0; i < 10; ++i){
+        insert_pmap(&p, get_heap_int(i), strdup("STRING"));
+    }
+    seal_pmap(&p);
+
+    load_pmap(&p, fn);
+    x = 3;
+    /*key must be same exact length*/
+    puts((char*)lookup_pmap(&p, &x, hash));
+
+    return 0;
+}
+
 int main(int argc, char** argv){
+    /*return kv_test();*/
 	struct pmap p;
     char str[6] = {0};
     struct test_struct* val;
@@ -152,20 +196,20 @@ int main(int argc, char** argv){
     /* can't let thread count get too high while keeping capcity low or they compete over slots to pop from */
     /* TODO: these should be dynamically chosen using expected insertions and max_threads and memory */
     /* 3/4 threads seems good for this - at 9.7s for 11M */
-    init_pmap(&p, "fyle", 0, sizeof(struct test_struct), 1024, 5, 524288, 0);
+    init_pmap(&p, "fyle", hash, 0, sizeof(struct test_struct), 1024, 5, 524288, 0);
     /* inserting (26^5)7 strings - ~83.1M takes 4m36s */
     for(int i = 0; i < 2; ++i){
         for(char a = 'a'; a <= 'z'; ++a){
             for(char b = 'a'; b <= 'z'; ++b){
                 for(char c = 'a'; c <= 'z'; ++c){
                     for(char d = 'a'; d <= 'z'; ++d){
-                        /*for(char e = 'a'; e <= 'z'; ++e){*/
+                        for(char e = 'a'; e <= 'z'; ++e){
                             /*for(char f = '0'; f <= '7'; ++f){*/
                                 str[0] = a;
                                 str[1] = b;
                                 str[2] = c;
                                 str[3] = d;
-                                /*str[4] = e;*/
+                                str[4] = e;
                                 /*str[5] = f;*/
 
                                 if(i == 0){
@@ -176,7 +220,7 @@ int main(int argc, char** argv){
                                     ++n_str;
                                     if(!locking){
                                         val = malloc(sizeof(struct test_struct));
-                                        memcpy(val->stree, str, 4);
+                                        memcpy(val->stree, str, 5);
                                         val->val = a;
                                         /**val = a-'a'+d-'a';*/
                                         /**val = a;*/
@@ -185,7 +229,7 @@ int main(int argc, char** argv){
                                     }
                                     /*else insert_lpi_q(&p.hdr.pmi.lpq, str, a-'a');*/
                                 }
-                            /*}*/
+                            }
                         /*}*/
                     }
                 }
