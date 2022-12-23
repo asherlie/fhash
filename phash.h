@@ -1,5 +1,6 @@
 #include <stdio.h>
 #include <stdint.h>
+#include <stdlib.h>
 #include <pthread.h>
 
 static const _Bool locking = 0;
@@ -145,6 +146,7 @@ inline VALTYPE lookup_pmap_##NAME(){  \
 return 2; \
 } 
 
+
 def_pmap(int_long, int, long)
 
 
@@ -161,3 +163,18 @@ struct timespec seal_pmap(struct pmap* p);
 void load_pmap(struct pmap* p, char* fn);
 void* lookup_pmap(const struct pmap* p, void* key, int (*hash_func)(void*, int));
 int partial_load_lookup_pmap(int fd, char* key);
+
+// defines a shallow wrapper for struct pmap* to be returned by init()
+#define define_pmap(NAME, KEYTYPE, VALTYPE, hash_func) \
+typedef struct NAME{ \
+struct pmap* p; \
+}NAME; \
+static inline NAME* init_##NAME(char* fn){ \
+    NAME* r = malloc(sizeof(NAME)); \
+    r->p = malloc(sizeof(struct pmap)); \
+    /* TODO: get variable length char* working */ \
+    init_pmap(r->p, fn, hash_func, sizeof(KEYTYPE), sizeof(VALTYPE), 1024, 5, 524288, 0); \
+    return r; \
+}
+
+define_pmap(beeper, int, int, NULL)
