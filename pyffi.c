@@ -1,4 +1,5 @@
 #include <fcntl.h>
+#include <string.h>
 #include <unistd.h>
 
 #include "phash.h"
@@ -11,40 +12,105 @@
  * init_pmap("fn", buckets, threads, 1000, 0)
  *     init_pmap(&global_pmap, buckets, ...)
 */
-struct pmap P;
+struct song_name{
+    char name[1000];
+};
 
+struct song_attributes{
+    float danceability;
+    float energy;
+    int key;
+    float loudness;
+    float speechiness;
+    float acousticness;
+};
 
-void init(char* fn, int n_buckets, int n_threads, int elements_in_mem, _Bool duplicates_expected){
-    init_pmap(&P, fn, n_threads, n_threads, elements_in_mem, duplicates_expected);
+static inline int hash_song_dance_key(void* song, int buckets){
+    struct song_attributes* a = song;
+    return ((int)(a->danceability*11+a->key*7)) % buckets;
+    // the higher the granularity value, the more similar songs in buckets should be
+    int granularity = 10;
+    int danciness_window = a->danceability/(10*granularity);
+    int key_window = a->key*10*granularity;
+    return (danciness_window*3+key_window*7) % buckets;
 }
 
-void build_hdr(char* key){
-    build_pmap_hdr(&P, key);
+define_pmap(spot_map, struct song_attributes, struct song_name, hash_song_dance_key)
+
+spot_map* P;
+
+
+void init(char* fn){
+    P = init_spot_map(fn);
+}
+
+void build_hdr(float danceability, float energy, int key, float loudness, float speechiness, float acousticness, char* name){
+    struct song_name n;
+    struct song_attributes a = 
+        {.danceability=danceability, .energy=energy, .key=key, .loudness=loudness,
+        .speechiness=speechiness, .acousticness=acousticness};
+    strcpy(n.name, name);
+
+    build_spot_map_hdr(P, a, n);
 }
 
 void finalize_hdr(){
-    finalize_pmap_hdr(&P);
+    finalize_spot_map_hdr(P);
 }
 
-void insert(char* key, int val){
-    insert_pmap(&P, key, val);
+void insert(float danceability, float energy, int key, float loudness, float speechiness, float acousticness, char* name){
+    struct song_name* n = calloc(sizeof(struct song_name), 1);
+    struct song_attributes* a = malloc(sizeof(struct song_attributes));
+
+    strcpy(n->name, name);
+    a->danceability = danceability;
+    a->energy = energy;
+    a->key = key;
+    a->loudness = loudness;
+    a->speechiness = speechiness;
+    a->acousticness = acousticness;
+
+    insert_spot_map(P, a, n);
 }
 
 void seal(){
-    seal_pmap(&P);
+    seal_spot_map(P);
 }
 
 void load(char* fn){
-    load_pmap(&P, fn);
+    P = load_spot_map(fn);
 }
 
-int lookup(char* key){
-    return lookup_pmap(&P, key);
+char* lookup(float danceability, float energy, int key, float loudness, float speechiness, float acousticness){
+    struct song_attributes a = 
+        {.danceability=danceability, .energy=energy, .key=key, .loudness=loudness, 
+        .speechiness=speechiness, .acousticness=acousticness};
+    return lookup_spot_map(P, &a)->name;
 }
 
-int lookup_quick(char* fn, char* key){
-    int fd = open(fn, O_RDONLY), ret;
-    ret = partial_load_lookup_pmap(fd, key);
-    close(fd);
-    return ret;
+char** lookup_bucket(float danceability, float energy, int key, float loudness, float speechiness, float acousticness){
+    struct song_attributes a = 
+        {.danceability=danceability, .energy=energy, .key=key, .loudness=loudness, 
+        .speechiness=speechiness, .acousticness=acousticness};
+    return (char**)lookup_spot_map_bucket(P, &a, 0, 1000);
 }
+
+/*
+ * int lookup_quick(char* fn, char* key){
+ *     int fd = open(fn, O_RDONLY), ret;
+ *     ret = partial_load_lookup_pmap(fd, key);
+ *     close(fd);
+ *     return ret;
+ * }
+*/
+/*
+ * 
+ * void init(char* fn);
+ * void build_hdr(float danceability, float energy, int key, float loudness, float speechiness, float acousticness, char* name);
+ * void finalize_hdr();
+ * void insert(float danceability, float energy, int key, float loudness, float speechiness, float acousticness, char* name);
+ * void seal();
+ * void load(char* fn);
+ * char* lookup(float danceability, float energy, int key, float loudness, float speechiness, float acousticness);
+ * char** lookup_bucket(float danceability, float energy, int key, float loudness, float speechiness, float acousticness);
+*/
