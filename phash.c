@@ -5,7 +5,7 @@
 #include <string.h>
 #include <fcntl.h>
 #include <unistd.h>
-/*#include <sys/param.h>*/
+#include <assert.h>
 
 #include "phash.h"
 
@@ -268,14 +268,20 @@ void finalize_pmap_hdr(struct pmap* p){
     */
     /* TODO: i can probably be more clever about max val/key len */
 	for(int i = 0; i < p->hdr.n_buckets; ++i){
+        // if same as prev/empty - set to 0/-1
 		p->hdr.bucket_offset[i] = cur_offset;
 		/* number of items per idx * (reserved space per key + value int) */
 		/*cur_offset += (p->hdr.col_map[i]*(p->hdr.max_keylen_map[i]+sizeof(int)));*/
 		cur_offset += (p->hdr.col_map[i]*(p->hdr.max_keylen_map[i]+p->hdr.max_vallen_map[i]));
-        /*if(p->hdr.max_keylen_map[i] > p->hdr.pmi.rwbuf_sz){*/
-        if((tmpsum = (p->hdr.max_keylen_map[i] + p->hdr.max_vallen_map[i])) > p->hdr.pmi.rwbuf_sz){
+        /* TODO: is this slower than just checking if the previous == 0 */
+        if(cur_offset == p->hdr.bucket_offset[i]){
+            /*printf("setting bucket[%i] to -1, cur_offset == %i\n", i, cur_offset);*/
+            p->hdr.bucket_offset[i] = -1;
+        }
+        else if((tmpsum = (p->hdr.max_keylen_map[i] + p->hdr.max_vallen_map[i])) > p->hdr.pmi.rwbuf_sz){
             p->hdr.pmi.rwbuf_sz = tmpsum;
         }
+        /*if(p->hdr.max_keylen_map[i] > p->hdr.pmi.rwbuf_sz){*/
 	}
 
     zerobuf = calloc(p->hdr.pmi.rwbuf_sz, p->hdr.pmi.max_bucket_len);
@@ -286,7 +292,13 @@ void finalize_pmap_hdr(struct pmap* p){
     */
 
 	/* write header */
-	write(fd, &p->hdr.n_buckets, sizeof(int));
+    int bo = (p->hdr.n_buckets);
+    /*
+     * printf("n buckets written: %i\n", p->hdr.n_buckets);
+     * printf("n buckets written: %i\n", bo);
+    */
+	/*write(fd, &p->hdr.n_buckets, sizeof(int));*/
+	write(fd, &bo, sizeof(int));
 	write(fd, p->hdr.col_map, sizeof(int) * p->hdr.n_buckets);
 	write(fd, p->hdr.max_keylen_map, sizeof(int) * p->hdr.n_buckets);
 	write(fd, p->hdr.max_vallen_map, sizeof(int) * p->hdr.n_buckets);
@@ -435,6 +447,7 @@ void insert_pmap(struct pmap* p, void* key, void* val){
 */
 void insert_pmap_internal(struct pmap* p, void* key, void* val, uint8_t* rdbuf, uint8_t* wrbuf, int fd){
 	int idx = p->hdr.pmi.hash_func(key, p->hdr.n_buckets), ins_idx;
+    /*printf("inserting at idx %i\n", idx);*/
 	int kv_sz = p->hdr.max_keylen_map[idx]+p->hdr.max_vallen_map[idx];
 	int cur_offset;
     int klen, vlen;
@@ -449,13 +462,18 @@ void insert_pmap_internal(struct pmap* p, void* key, void* val, uint8_t* rdbuf, 
     else vlen = p->vallen;
 
     /* zero the section of wrbuf we'll be using */
+    /* TODO: get rid of wrbuf? we only need it with variable length strings */
     memset(wrbuf+klen, 0, p->hdr.max_keylen_map[idx]-klen);
     memcpy(wrbuf, key, klen);
     free(key);
     memset(wrbuf+p->hdr.max_keylen_map[idx]+vlen, 0, p->hdr.max_vallen_map[idx]-vlen);
 	memcpy(wrbuf+p->hdr.max_keylen_map[idx], val, vlen);
     free(val);
+    // insteresting, cur_offset is set to -1 here which is corrupting n_buckets
+    // after seeking to beginning of file before write!
+    // need to update -1 criteria - all indices reached during insertion should be pre-reserved
 	cur_offset = p->hdr.bucket_offset[idx];
+    assert(cur_offset >= 0);
     /*
      * can i organize the data in such a way that it's easier to compare strings?
      * buckets are getting large and O(N) is not so easy anymore
@@ -545,8 +563,39 @@ void* insert_pmap_th(void* vpmap){
  */
 void load_pmap(struct pmap* p, char* fn){
     int fd = open(fn, O_RDONLY);
+    lseek(fd, 0, SEEK_SET);
+
     strcpy(p->fn, fn);
+    /*
+     * this is being read from the wrong offset!
+     * need to lseek to 0??
+    */
     read(fd, &p->hdr.n_buckets, sizeof(int));
+    /*printf("n buckets loaded: %i\n", p->hdr.n_buckets);*/
+    /*p->hdr.n_buckets = ntohl(p->hdr.n_buckets);*/
+    /*printf("N buckets loaded: %i\n", p->hdr.n_buckets);*/
+    /*
+     * very interesting, this is being read badly!! 554 is being read when it should be 9k
+     * ok - i likely have many endianness issues - 
+     * this could be happening with every single byte being written
+     * they could all be out of order because i'm not writing byte by byte
+     *
+     * turns out that instead of n_buckets being read, the first value after dance is being read!
+     * buffer corruption? buffer being reused?
+     * it's dance value!
+     *
+     * this can be seen in the bytes as well -they're getting written wrong
+     * - danciness is 3997, first two bytes are 9d, 0f - 0x0f9d == 3997
+     *
+     *   i can get to the bottom of this by investigating the first insert_pmap_internal()!
+     *
+    */
+    /*
+     * actually i really think it's prob not endianness
+     * how could it be if this always runs on just one system...
+     * investigate finalize() writes and load read()s
+    */
+
     p->hdr.col_map = malloc(sizeof(int)*p->hdr.n_buckets);
     p->hdr.max_keylen_map = malloc(sizeof(int)*p->hdr.n_buckets);
     p->hdr.max_vallen_map = malloc(sizeof(int)*p->hdr.n_buckets);
@@ -588,18 +637,29 @@ void* lookup_pmap(const struct pmap* p, void* key, int (*hash_func)(void*, int))
 
 /* returns NULL terminated list of size <= n */
 /* we can assume the caller has enough memory to store n entries */
+/* TODO: this should return a list of keys and values */
 void** lookup_pmap_bucket(const struct pmap* p, void* key, int start_idx, int n, int (*hash_func)(void*, int)){
-    int idx = hash_func(key, p->hdr.n_buckets);
+    int idx = hash_func(key, p->hdr.n_buckets), ins_idx = 0;
     int fd = open(p->fn, O_RDONLY);
     int kv_sz = p->hdr.max_vallen_map[idx]+p->hdr.max_keylen_map[idx];
     /*int to_read = kv_sz*MIN(n, p->hdr.col_map[idx]);*/
     void** ret = calloc(sizeof(void*), n+1);
 
+    // max keylen map[idx] is extraordinarily large, vallen[idx] == 0
+    /*
+     * printf("offset is %i\n", p->hdr.bucket_offset[idx]);
+     * printf("seeking to %i\n", p->hdr.bucket_offset[idx]+(kv_sz*start_idx));
+    */
     lseek(fd, p->hdr.bucket_offset[idx]+(kv_sz*start_idx), SEEK_SET);
 
     for(int i = start_idx; i < p->hdr.col_map[idx]; ++i){
-        ret[i] = malloc(kv_sz);
-        read(fd, ret[i], kv_sz);
+        if(ins_idx == n)break;
+        /*ret[i] = malloc(kv_sz);*/
+        ret[ins_idx] = malloc(p->hdr.max_vallen_map[idx]);
+        /*read(fd, ret[i], kv_sz);*/
+        lseek(fd, p->hdr.max_keylen_map[idx], SEEK_CUR);
+        /*these reads are returning 0*/
+        read(fd, ret[ins_idx++], p->hdr.max_vallen_map[idx]);
     }
 
     close(fd);
