@@ -206,7 +206,7 @@ struct spotify_song* gen_song(int danciness, float tempo, int volume, int key, i
 
 struct spotify_uri* gen_uri(char* str){
     struct spotify_uri* u = malloc(sizeof(struct spotify_uri));
-    strncpy(u->uri, str, 32);
+    memcpy(u->uri, str, 34);
     return u;
 }
 
@@ -215,12 +215,13 @@ struct spotify_uri* gen_uri(char* str){
  * and take in granularity for each option - if 0, not counted, the larger the granularity the larger the buckets
 */
 #define def_hash_func(NAME, DANCE_GRAN, KEY_GRAN, TEMPO_GRAN, VOLUME_GRAN)
+
 static inline int hash_song_dance_tempo(void* song, int buckets){
     struct spotify_song* s = song;
     // the higher the granularity value, the more similar songs in buckets should be
-    int granularity = 1;
+    int granularity = 10;
     int danciness_window = s->danciness/(10*granularity);
-    int tempo_window = s->tempo*10;
+    int tempo_window = s->tempo*10*granularity;
     return (danciness_window*3+tempo_window*7) % buckets;
     return (s->danciness+s->key) % buckets;
 
@@ -241,6 +242,59 @@ THERE WILL BE `DENOMINATOR` ITEMS PER WINDOW - easy!
 }
 
 define_pmap(spotify_map, struct spotify_song, struct spotify_uri, hash_song_dance_tempo)
+
+void many_spotify_insertions(time_t seed){
+    struct spotify_song* s;
+    struct spotify_uri* u;
+    char songdesc[35];
+    
+    int danc;
+    float tempo;
+
+    spotify_map* m = init_spotify_map("all_songs");
+
+    // TODO: there are some empty uri strings being popped and we get seg faults with
+    for(int iter = 0; iter < 2; ++iter){
+        srandom(seed);
+        // 83M entries generate a 4.7 gb file
+        // entries are looked up within 
+        /*OMG! so stupid!! can't use random numbers - must reset seed each call!!*/
+        /*for(int i = 0; i < 8300000; ++i){*/
+        for(int i = 0; i < 83000; ++i){
+            s = gen_song((danc = i%10000), (tempo = (float)(random()%39000)), (i*3)%43, random(), i);
+            snprintf(songdesc, 35, "d: %i, t: %.2f", danc, tempo);
+            u = gen_uri(songdesc);
+            if(iter == 0){
+                build_spotify_map_hdr(m, *s, *u);
+                free(s);
+                free(u);
+            }
+            else insert_spotify_map(m, s, u);
+        }
+        if(iter == 0){
+            finalize_spotify_map_hdr(m);
+            puts("beginning insertions");
+        }
+    }
+    seal_spotify_map(m);
+}
+
+void many_spotify_lookup(){
+    struct spotify_song* key = gen_song(40000, .49, 0, 00, 00);
+    spotify_map* m = load_spotify_map("all_songs");
+    /*struct spotify_uri* val = lookup_spotify_map(m, key);*/
+    // vallen header is empty, keylen is corrupt
+    struct spotify_uri** vals = lookup_spotify_map_bucket(m, key, 0, 10);
+    int n = 0;
+    for(struct spotify_uri** i = vals; *i; ++i){
+        printf("%i: %s\n", n, (*i)->uri);
+        ++n;
+    }
+    /*
+     * if(!val)puts("no entry found");
+     * else puts(val->uri);
+    */
+}
 
 void spotify_test(){
     struct spotify_song* songs[2] = {gen_song(94, .4, 9, 10, 0), gen_song(1, .4, 2, 10, 1)};
@@ -272,7 +326,12 @@ void spotify_test(){
 }
 
 int main(int argc, char** argv){
-    spotify_test();
+    time_t t = time(NULL);
+    t = 1672024293;
+    printf("srand: %li\n", t);
+    many_spotify_insertions(t);
+    many_spotify_lookup();
+    /*spotify_test();*/
     /*macro_test();*/
     return 0;
     return kv_test();
